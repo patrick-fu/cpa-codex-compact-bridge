@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, gate, and publish linux/amd64 release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+
+      - name: Checkout pinned CLIProxyAPI (v7.2.120)
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: router-for-me/CLIProxyAPI
+          ref: ea37d13a9eced4af835cad10bcb030d770a5ba88 # v7.2.120
+          path: cpa
+
+      - name: Set up Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: plugin/go.mod
+          cache-dependency-path: |
+            plugin/go.sum
+            integration/go.sum
+
+      - name: Parse and validate version
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$tag' must be a strict x.y.z version (got '$version')"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Require a tag commit reachable from main
+        run: |
+          git fetch origin main
+          tag_commit="$(git rev-list -n1 "$GITHUB_REF")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "::error::release tag must point to a commit reachable from main"
+            exit 1
+          fi
+
+      - name: Verify default source metadata matches the release tag
+        working-directory: plugin
+        env:
+          CPA_COMPACT_EXPECTED_PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+        run: go test -run '^TestPluginRegisterResponseUsesConfiguredVersion$' -count=1 .
+
+      - name: Unit test with release metadata
+        working-directory: plugin
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CPA_COMPACT_EXPECTED_PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+        run: go test -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=$VERSION" ./...
+
+      - name: Vet
+        working-directory: plugin
+        run: go vet ./...
+
+      - name: Build c-shared ABI library
+        working-directory: plugin
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p ../stage
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -buildmode=c-shared \
+            -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=$VERSION" \
+            -o ../stage/cpa-codex-compact-bridge.so .
+          # c-shared also emits a header next to the library; keep the stage
+          # directory limited to the shared object so the zip root is exact.
+          rm -f ../stage/cpa-codex-compact-bridge.h
+          file ../stage/cpa-codex-compact-bridge.so
+
+      - name: Package release archive and checksums
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          zip_name="cpa-codex-compact-bridge_${VERSION}_linux_amd64.zip"
+          (cd stage && zip -X "../$zip_name" cpa-codex-compact-bridge.so)
+
+          # The zip root must contain exactly the shared library.
+          entries="$(unzip -Z1 "$zip_name")"
+          if [ "$entries" != "cpa-codex-compact-bridge.so" ]; then
+            echo "::error::zip root must contain exactly 'cpa-codex-compact-bridge.so'; got:"
+            printf '%s\n' "$entries"
+            exit 1
+          fi
+
+          # sha256sum-format checksum of the archive.
+          sha256sum "$zip_name" > checksums.txt
+
+          # Verify the checksum round-trips.
+          sha256sum -c checksums.txt
+
+          echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
+          ls -l "$zip_name" checksums.txt
+
+      - name: Integration gate against pinned CLIProxyAPI
+        working-directory: integration
+        env:
+          CPA_SOURCE_DIR: ${{ github.workspace }}/cpa
+        run: go test ./...
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          zip="${{ steps.package.outputs.zip }}"
+          # Re-runs refresh an existing release. Other creation failures stay
+          # visible instead of being misclassified as an existing release.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$zip" checksums.txt --clobber
+          else
+            gh release create "$tag" \
+            --title "cpa-codex-compact-bridge v${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            "$zip" checksums.txt
+          fi

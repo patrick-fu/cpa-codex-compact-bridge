@@ -18,8 +18,8 @@ The `encrypted_content` field of the bridged V2 compaction item holds the **plai
 ## Status
 
 - **Confirmed:** CLIProxyAPI **v7.2.120**, **linux/amd64** — build and integration CI.
+- **Prebuilt binaries** for linux/amd64 will be published on [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases). See [Installation](#installation).
 - **Experimental / unverified:** other CLIProxyAPI versions, macOS/Windows builds, and other CPU architectures. Build the library yourself for your platform; behavior is not guaranteed there.
-- **Source-first release.** No prebuilt binaries are distributed. Build from source.
 
 ## Disclaimers
 
@@ -29,24 +29,28 @@ The `encrypted_content` field of the bridged V2 compaction item holds the **plai
 
 ## Installation
 
-Build a dynamic library matching your CPA runtime platform:
+**Linux amd64 (recommended):** build from source or download a prebuilt binary from [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases) when available.
 
 ```bash
 cd plugin
 go build -buildmode=c-shared -o cpa-codex-compact-bridge.so .
 ```
 
-Place the artifact in CPA's plugin discovery directory. The tested target is Linux
-amd64:
+Place the artifact in CPA's plugin discovery directory:
 
 ```text
 <plugin-dir>/linux/amd64/cpa-codex-compact-bridge.so
 ```
 
-Use `.dylib` on macOS or `.dll` on Windows and replace the directory with
-`<GOOS>/<GOARCH>`; those platforms are experimental. The dynamic library
-basename (without extension) is the plugin ID. The plugin is compiled against
-the CLIProxyAPI `v7.2.120` SDK.
+**Other platforms (experimental):** use `.dylib` on macOS or `.dll` on Windows and replace the directory with `<GOOS>/<GOARCH>`.
+
+The dynamic library basename (without extension) is the plugin ID. The plugin is compiled against the CLIProxyAPI `v7.2.120` SDK.
+
+## CPA Plugin Store
+
+This plugin is **not yet listed** in the [CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store). You cannot currently install it via CPA's built-in plugin store command. Use the manual installation steps above.
+
+A prebuilt binary release and store submission are planned; see [CONTRIBUTING.md](CONTRIBUTING.md#maintainer-releases) for the maintainer release workflow.
 
 ## Configuration
 

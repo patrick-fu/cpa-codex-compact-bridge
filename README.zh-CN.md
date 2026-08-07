@@ -20,8 +20,8 @@ V2 compaction item 的 `encrypted_content` 字段保存的是**明文**摘要。
 ## 状态
 
 - **已确认：** CLIProxyAPI **v7.2.120**、**linux/amd64** —— 构建与集成 CI。
+- **预编译二进制** linux/amd64 发布后将可用于 [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases)。见[安装](#安装)。
 - **实验性 / 未验证：** 其他 CLIProxyAPI 版本、macOS/Windows 构建、其他 CPU 架构。需自行编译对应平台的动态库，这些平台的行为不保证。
-- **源码首发。** 不分发预编译二进制，从源码构建。
 
 ## 免责声明
 
@@ -31,20 +31,28 @@ V2 compaction item 的 `encrypted_content` 字段保存的是**明文**摘要。
 
 ## 安装
 
-构建与 CPA 运行平台一致的动态库：
+**Linux amd64（推荐）：** 从源码构建，或在 [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases) 发布后下载预编译二进制。
 
 ```bash
 cd plugin
 go build -buildmode=c-shared -o cpa-codex-compact-bridge.so .
 ```
 
-将产物放到 CPA 的插件发现目录。已验证的目标是 Linux amd64：
+将产物放到 CPA 的插件发现目录：
 
 ```text
 <plugin-dir>/linux/amd64/cpa-codex-compact-bridge.so
 ```
 
-macOS 使用 `.dylib`、Windows 使用 `.dll`，目录按 `<GOOS>/<GOARCH>` 替换；这些平台均属实验性。动态库 basename（去扩展名）即插件 ID。该插件按 CLIProxyAPI `v7.2.120` SDK 编译。
+**其他平台（实验性）：** macOS 使用 `.dylib`、Windows 使用 `.dll`，目录按 `<GOOS>/<GOARCH>` 替换。
+
+动态库 basename（去扩展名）即插件 ID。该插件按 CLIProxyAPI `v7.2.120` SDK 编译。
+
+## CPA Plugin Store
+
+本插件**尚未列入** [CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)。目前无法通过 CPA 内置的插件商店命令安装，请使用上述手动安装步骤。
+
+预编译二进制发布和商店提交已在计划中；发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md#maintainer-releases)。
 
 ## 配置
 
