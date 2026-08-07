@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new capability or improvement
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is currently hard or impossible to do?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: input
+    id: cpa
+    attributes:
+      label: CLIProxyAPI version (if relevant)
+      placeholder: v7.2.120
+  - type: input
+    id: platform
+    attributes:
+      label: OS / architecture (if relevant)
+      placeholder: linux/amd64

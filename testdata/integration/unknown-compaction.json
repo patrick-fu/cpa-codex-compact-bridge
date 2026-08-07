@@ -1,0 +1,16 @@
+{
+  "model": "bridge-test",
+  "stream": false,
+  "input": [
+    {
+      "type": "compaction",
+      "id": "other_provider_compact_xyz",
+      "encrypted_content": "opaque blob"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [{"type": "input_text", "text": "continue after opaque compact"}]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "type": "response.create",
+  "previous_response_id": "${PREVIOUS_RESPONSE_ID}",
+  "input": [{"type": "compaction_trigger"}]
+}

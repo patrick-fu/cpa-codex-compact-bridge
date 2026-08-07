@@ -1,0 +1,8 @@
+{
+  "model": "bridge-test",
+  "input": [{
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "history to compact"}]
+  }]
+}

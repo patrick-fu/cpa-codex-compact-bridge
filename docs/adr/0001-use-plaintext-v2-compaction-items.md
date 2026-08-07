@@ -1,0 +1,3 @@
+# Use plaintext V2 compaction items
+
+The plugin will place the bridged summary directly in V2 `encrypted_content`, without a private envelope, so persisted Codex sessions have the best available chance of continuing when the plugin is later removed. A separate `cpa_compact_<uuid>` item ID identifies the plugin's own plaintext state for replay normalization; it does not alter the summary text. This deliberately trades provider-verifiable native state and guaranteed cross-provider replay for user-visible, best-effort interoperability; the plugin still fails closed while it owns a Bridged Compact Route.

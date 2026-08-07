@@ -1,0 +1,48 @@
+Third-party notices for cpa-codex-compact-bridge
+
+This project uses the following third-party software. License texts are as
+published by their respective projects; consult each repository for the
+authoritative copy.
+
+CLIProxyAPI
+-----------
+  Project:  CLIProxyAPI
+  URL:      https://github.com/router-for-me/CLIProxyAPI
+  Module:   github.com/router-for-me/CLIProxyAPI/v7
+  Version:  v7.2.120
+  Use:      Plugin SDK and build/test dependency. This plugin is built and
+            tested against CLIProxyAPI v7.2.120.
+  License:  MIT License
+            Copyright (c) 2025 Luis Pater
+            Copyright (c) 2025-present Router-For.ME
+
+  This project is not affiliated with, endorsed by, or certified by
+  CLIProxyAPI or its maintainers.
+
+google/uuid
+-----------
+  Project:  uuid
+  URL:      https://github.com/google/uuid
+  Version:  v1.6.0
+  License:  BSD-3-Clause
+
+gopkg.in/yaml.v3
+----------------
+  Project:  yaml
+  URL:      https://github.com/go-yaml/yaml
+  Version:  v3.0.1
+  License:  The Apache License, Version 2.0 and the MIT License (dual-licensed)
+
+gorilla/websocket
+-----------------
+  Project:  websocket
+  URL:      https://github.com/gorilla/websocket
+  Version:  v1.5.3
+  Use:      Integration test suite only
+  License:  BSD-2-Clause
+
+Go standard library and toolchain
+---------------------------------
+  Project:  Go
+  URL:      https://go.dev
+  License:  BSD-3-Clause

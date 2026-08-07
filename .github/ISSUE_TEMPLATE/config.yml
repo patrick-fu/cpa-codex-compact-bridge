@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/patrick-fu/cpa-codex-compact-bridge/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue. See SECURITY.md.
+  - name: Compliance reminder
+    url: https://github.com/patrick-fu/cpa-codex-compact-bridge#disclaimers
+    about: The plugin does not vet providers. You are responsible for your provider, account, rate-limit, and quota compliance.
