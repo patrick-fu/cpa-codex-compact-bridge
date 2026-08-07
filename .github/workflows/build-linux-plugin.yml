@@ -17,11 +17,11 @@ jobs:
     steps:
       - name: Checkout
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Checkout pinned CLIProxyAPI
         # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: router-for-me/CLIProxyAPI
           ref: ea37d13a9eced4af835cad10bcb030d770a5ba88 # v7.2.120
