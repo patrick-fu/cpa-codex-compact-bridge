@@ -1,0 +1,64 @@
+name: Bug report
+description: Report something that is not working as expected
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+        For security vulnerabilities, do **not** open an issue. Use a private security advisory instead (see SECURITY.md).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configured rules ...
+        2. Sent request ...
+        3. Observed ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any error code (e.g. `compact_bridge_failed`) and which protocol path failed (V1 / V2 SSE / replay / WebSocket).
+    validations:
+      required: true
+  - type: input
+    id: cpa
+    attributes:
+      label: CLIProxyAPI version
+      placeholder: v7.2.120
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS / architecture
+      placeholder: linux/amd64
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and summary_model (if relevant)
+      placeholder: e.g. glm-5.2
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant configuration and logs
+      description: Redact all credentials, API keys, and account identifiers. Paste your `rules` block and the relevant CPA plugin logs.
+      render: shell

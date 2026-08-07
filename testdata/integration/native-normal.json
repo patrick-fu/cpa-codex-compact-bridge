@@ -1,0 +1,9 @@
+{
+  "model": "native-test",
+  "stream": false,
+  "input": [{
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "ordinary native turn"}]
+  }]
+}

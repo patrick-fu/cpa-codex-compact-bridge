@@ -1,0 +1,10 @@
+{
+  "type": "response.create",
+  "model": "bridge-test",
+  "input": [{
+    "type": "message",
+    "id": "msg-first",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "ordinary websocket turn"}]
+  }]
+}

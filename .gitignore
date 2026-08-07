@@ -1,0 +1,20 @@
+# Native c-shared outputs from local builds.
+plugin/cpa-codex-compact-bridge.so
+plugin/cpa-codex-compact-bridge.dylib
+plugin/cpa-codex-compact-bridge.dll
+plugin/cpa-codex-compact-bridge.h
+
+# CI and local release artifacts.
+dist/
+
+# Local configuration, credentials, and diagnostics.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+
+# Operating-system metadata.
+.DS_Store

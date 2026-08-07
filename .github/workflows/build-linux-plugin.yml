@@ -1,0 +1,66 @@
+name: Build Linux Plugin
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-integration:
+    name: Test and build linux/amd64 plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout pinned CLIProxyAPI
+        # v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: router-for-me/CLIProxyAPI
+          ref: ea37d13a9eced4af835cad10bcb030d770a5ba88 # v7.2.120
+          path: cpa
+
+      - name: Set up Go
+        # v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: plugin/go.mod
+          cache-dependency-path: |
+            plugin/go.sum
+            integration/go.sum
+
+      - name: Unit test
+        working-directory: plugin
+        run: go test ./...
+
+      - name: Vet
+        working-directory: plugin
+        run: go vet ./...
+
+      - name: Build c-shared ABI library
+        working-directory: plugin
+        run: |
+          mkdir -p ../dist/linux-amd64
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -buildmode=c-shared -o ../dist/linux-amd64/cpa-codex-compact-bridge.so .
+          file ../dist/linux-amd64/cpa-codex-compact-bridge.so
+          (
+            cd ../dist/linux-amd64
+            sha256sum cpa-codex-compact-bridge.so > cpa-codex-compact-bridge.so.sha256
+          )
+
+      - name: Integration gate against pinned CLIProxyAPI
+        working-directory: integration
+        env:
+          CPA_SOURCE_DIR: ${{ github.workspace }}/cpa
+        run: go test ./...
+
+      # The project is source-first: this job proves the ABI build and records
+      # a checksum in the job log, but does not distribute a prebuilt library.

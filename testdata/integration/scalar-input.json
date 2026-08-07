@@ -1,0 +1,5 @@
+{
+  "model": "bridge-test",
+  "stream": false,
+  "input": "Reply only PONG."
+}

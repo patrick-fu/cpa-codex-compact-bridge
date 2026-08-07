@@ -1,0 +1,9 @@
+{
+  "model": "summary-test",
+  "stream": false,
+  "input": [{
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "ordinary turn"}]
+  }]
+}
