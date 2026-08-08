@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -84,6 +85,37 @@ func routeResult(t *testing.T, raw []byte) pluginapi.ModelRouteResponse {
 		t.Fatalf("decode route result: %v", err)
 	}
 	return result
+}
+
+func registeredPluginVersion(t *testing.T) string {
+	t.Helper()
+	raw, err := handleMethod(pluginabi.MethodPluginRegister, lifecycleRequestJSON(t, "rules:\n  - match: '*'\n    action: bridge\n"))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	env := decodeTestEnvelope(t, raw)
+	if !env.OK {
+		t.Fatalf("register envelope: %+v", env.Error)
+	}
+	var response struct {
+		Metadata struct {
+			Version string `json:"Version"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(env.Result, &response); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	return response.Metadata.Version
+}
+
+func TestPluginRegisterResponseUsesConfiguredVersion(t *testing.T) {
+	want := os.Getenv("CPA_COMPACT_EXPECTED_PLUGIN_VERSION")
+	if want == "" {
+		want = "0.1.0"
+	}
+	if got := registeredPluginVersion(t); got != want {
+		t.Fatalf("plugin.register metadata.Version = %q, want %q", got, want)
+	}
 }
 
 func TestHandleLifecycleRegisterAndReconfigure(t *testing.T) {

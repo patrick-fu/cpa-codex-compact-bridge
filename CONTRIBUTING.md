@@ -76,6 +76,28 @@ do not change the user-facing protocol contract or configuration.
   update `docs/compact-protocol.md`, `docs/configuration.md`, and `CONTEXT.md`,
   and call it out in the PR description.
 
+## Maintainer releases
+
+Prebuilt binaries will be published on [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases). The release workflow:
+
+1. **Prepare and tag** the commit as `vX.Y.Z`: first update the default
+   `pluginVersion` in `plugin/main.go` to `X.Y.Z` so source builds stay
+   accurate, then push the new tag. The workflow validates the tag and injects
+   the same version into release metadata. Do not retarget or reuse a tag.
+2. **CI** builds `c-shared` for linux/amd64, packages it as
+   `cpa-codex-compact-bridge_X.Y.Z_linux_amd64.zip` (single root-level `.so`),
+   and generates a `checksums.txt` in sha256sum format.
+3. **GitHub Release**: create a release from the tag with the zip and
+   `checksums.txt`. Other platforms are experimental and not included in the
+   release matrix.
+4. **CPA Plugin Store submission** (separate step, not part of the release
+   workflow): open a PR against
+   [CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)
+   adding one entry to `registry.json`. Include the release tag, evidence that
+   the zip and `checksums.txt` exist, and a short capability summary. See the
+   [research report](docs/research/cpa-plugin-store-publication.md) for
+   submission details and review expectations.
+
 ## Scope
 
 This plugin intentionally does one thing: bridge Codex remote compaction for

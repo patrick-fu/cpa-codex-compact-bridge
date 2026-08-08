@@ -50,11 +50,14 @@ import (
 
 // Plugin identity constants.
 const (
-	pluginName    = "cpa-codex-compact-bridge"
-	pluginVersion = "0.1.0"
-	pluginAuthor  = "patrick-fu"
-	pluginRepo    = "https://github.com/patrick-fu/cpa-codex-compact-bridge"
+	pluginName   = "cpa-codex-compact-bridge"
+	pluginAuthor = "patrick-fu"
+	pluginRepo   = "https://github.com/patrick-fu/cpa-codex-compact-bridge"
 )
+
+// pluginVersion can be overridden in release builds with:
+// -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=<version>"
+var pluginVersion = "0.1.0"
 
 // configHolder holds the active parsed configuration. It is replaced atomically
 // on plugin.register / plugin.reconfigure.
