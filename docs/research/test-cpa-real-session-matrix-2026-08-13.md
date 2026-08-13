@@ -130,3 +130,23 @@ Using the same historical rollout, DeepSeek model, prompt, three continuation qu
 Both Bridge transports pass the relative non-inferiority gate (`Bridge median >= local median - 5`). The summary-body comparison is the correct Bridge-specific metric. A secondary score based on the model answering questions after compaction produced medians local 79, V1 83, V2 72.5; inspection showed the V2 summaries retained the relevant facts, while the subsequent model sometimes made a more conservative inference about the DeepSeek retest. That downstream answer variance is not evidence that V2 returned a worse compact state.
 
 The native `cmp_*` safety case was rerun against `0.1.2-rc.d12112f`: exactly one CPA request log was created, it returned 502 `compact_bridge_failed`, no new Bridge marker or compact checkpoint was produced, and no continuation request ran. The intended fail-closed behavior remains intact.
+
+## Native V2 comparison (2026-08-14)
+
+V1 was excluded. Three product paths used the same source rollout, three post-compact questions, three independent compactions per path, and two blind GPT judges:
+
+- native V2: `gpt-5.4` through real test-cpa Codex OAuth;
+- Bridge V2: `DeepSeek V4 Flash` through `0.1.2-rc.d12112f`;
+- local compact: Codex local compact with `DeepSeek V4 Flash`.
+
+Native V2 state is opaque and cannot be directly scored, so the cross-route comparison uses only the three real continuation answers after each compaction.
+
+| Route | Continuation scores (6) | Median | Mean |
+|---|---|---:|---:|
+| Native V2 | 87, 87, 88, 97, 98, 99 | 92.5 | 92.7 |
+| Local compact | 71, 77, 78, 82, 85, 86 | 80.0 | 79.8 |
+| Bridge V2 | 60, 65, 67, 68, 83, 86 | 67.5 | 71.5 |
+
+All nine compactions and all 27 continuation turns completed successfully. Native V2 was materially stronger on this sample: two runs retained the first GLM follow-up `67×71=4757` and produced the correct new acceptance decision. Both plaintext-summary paths consistently omitted that first-round calculation. Bridge V2 additionally produced two continuations that incorrectly required DeepSeek to be retested, despite the summary retaining its success token.
+
+This comparison measures the real product paths, not a pure compaction-algorithm effect: native V2 used `gpt-5.4`, while Bridge/local used DeepSeek. The earlier direct summary-body evaluation remains the Bridge-specific result—Bridge V2 median 85 versus local 83.5—because it removes downstream answer variance. The new continuation result shows that native opaque state plus GPT gives substantially better practical recall and inference than either plaintext-summary path for this history; it does not isolate how much of the gain comes from native compaction versus the model.
