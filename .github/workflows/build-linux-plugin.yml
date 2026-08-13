@@ -67,5 +67,15 @@ jobs:
           CPA_SOURCE_DIR: ${{ github.workspace }}/cpa
         run: go test ./...
 
-      # The project is source-first: this job proves the ABI build and records
-      # a checksum in the job log, but does not distribute a prebuilt library.
+      - name: Upload test-only linux/amd64 candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cpa-codex-compact-bridge-linux-amd64-${{ github.sha }}
+          path: |
+            dist/linux-amd64/cpa-codex-compact-bridge.so
+            dist/linux-amd64/cpa-codex-compact-bridge.so.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      # The project is source-first: the workflow artifact is an ephemeral
+      # test candidate, not a published release.
