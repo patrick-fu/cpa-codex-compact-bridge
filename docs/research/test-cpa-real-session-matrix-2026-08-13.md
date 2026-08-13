@@ -112,3 +112,21 @@ The native GPT checkpoint case was rerun once with Codex `request_max_retries=0`
 This case passes the intended safety contract: detect native `cmp_*`, stop once, do not retry, do not bill the third-party provider, and do not manufacture portable state.
 
 After the round, test-cpa still had the same candidate artifact SHA-256 `07320c22ae9a076580fab0508b22a1208a2e237db66b4ae76f535e60793dabc5`, the same config SHA-256 `6812ab25010dd65a24115718c0551e156e038330f41529eb6dd74a06c834f2fa`, and the same rules: `gpt-*` passthrough, `DeepSeek V4 Flash` bridge, catch-all passthrough. Production was not accessed.
+
+## Prompt-aligned relative evaluation (2026-08-14)
+
+Commit `f20e36d` changed the Bridge default summary instruction to the exact Codex local-compaction prompt from OpenAI Codex `main` at `a70211249ab5d003836a2bb339f69265df84512c`. It also added optional plugin config `compact_prompt`; this must be set explicitly when the client customizes its own Codex prompt because remote V1/V2 requests do not carry that client-side setting.
+
+The prompt-aligned candidate was built by Linux CI against CPA v7.2.125 as version `0.1.2-rc.d12112f`. Source artifact, downloaded artifact, staged container file, and final plugin file all matched SHA-256 `2541541e162dead650d14ddf1170775db634d143fff56d4be9e8645873b118f2`. test-cpa loaded and registered that exact version after a CPA-only service restart; PostgreSQL and production were not touched. The test configuration was restored to SHA-256 `6812ab25010dd65a24115718c0551e156e038330f41529eb6dd74a06c834f2fa`.
+
+Using the same historical rollout, DeepSeek model, prompt, three continuation questions, and isolated profile construction, local, V1, and V2 were each compacted three times. All nine compactions and all 27 real continuation turns completed. Two blind GPT judges then scored both continuation answers and the compact summary bodies.
+
+| Route | Summary-body scores (6) | Median | Difference vs local |
+|---|---|---:|---:|
+| Local | 76, 80, 83, 84, 87, 88 | 83.5 | — |
+| Bridge V1 | 84, 84, 86, 86, 87, 90 | 86.0 | +2.5 |
+| Bridge V2 | 81, 82, 85, 85, 85, 87 | 85.0 | +1.5 |
+
+Both Bridge transports pass the relative non-inferiority gate (`Bridge median >= local median - 5`). The summary-body comparison is the correct Bridge-specific metric. A secondary score based on the model answering questions after compaction produced medians local 79, V1 83, V2 72.5; inspection showed the V2 summaries retained the relevant facts, while the subsequent model sometimes made a more conservative inference about the DeepSeek retest. That downstream answer variance is not evidence that V2 returned a worse compact state.
+
+The native `cmp_*` safety case was rerun against `0.1.2-rc.d12112f`: exactly one CPA request log was created, it returned 502 `compact_bridge_failed`, no new Bridge marker or compact checkpoint was produced, and no continuation request ran. The intended fail-closed behavior remains intact.
