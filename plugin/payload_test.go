@@ -30,42 +30,40 @@ func decodeSSEDataFrames(t *testing.T, raw []byte) []json.RawMessage {
 	return decoded
 }
 
-func TestV1SummaryResponseBody(t *testing.T) {
-	body, err := v1SummaryResponseBody("the summary text")
+func TestV1CompactResponseBodyUsesCanonicalCompactionItem(t *testing.T) {
+	items := parseInputItems([]json.RawMessage{
+		json.RawMessage(`{"type":"message","role":"user","content":[{"type":"input_text","text":"keep me"}]}`),
+	})
+	body, err := v1CompactResponseBody(items, "cpa_compact_test-uuid", "the summary text")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var parsed struct {
 		Output []struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
+			Type             string `json:"type"`
+			Role             string `json:"role"`
+			ID               string `json:"id"`
+			EncryptedContent string `json:"encrypted_content"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(parsed.Output) != 1 {
-		t.Fatalf("expected 1 output item, got %d", len(parsed.Output))
+	if len(parsed.Output) != 2 {
+		t.Fatalf("expected retained history plus compaction, got %d items", len(parsed.Output))
 	}
-	if parsed.Output[0].Type != "message" || parsed.Output[0].Role != "assistant" {
+	if parsed.Output[0].Type != "message" || parsed.Output[0].Role != "user" {
 		t.Fatalf("output[0] = %+v", parsed.Output[0])
 	}
-	if len(parsed.Output[0].Content) != 1 {
-		t.Fatalf("expected 1 content part, got %d", len(parsed.Output[0].Content))
-	}
-	c := parsed.Output[0].Content[0]
-	if c.Type != "output_text" || c.Text != "the summary text" {
-		t.Fatalf("content = %+v", c)
+	compact := parsed.Output[1]
+	if compact.Type != compactionType || compact.Role != "" || compact.ID != "cpa_compact_test-uuid" || compact.EncryptedContent != "the summary text" {
+		t.Fatalf("output[1] = %+v", compact)
 	}
 }
 
-func TestV1SummaryResponseBodyRoundTripsSpecialCharacters(t *testing.T) {
+func TestV1CompactResponseBodyRoundTripsSpecialCharacters(t *testing.T) {
 	summary := "quote: \\\"; newline:\n; unicode: 雪; backslash: \\\\; tag: <summary>"
-	body, err := v1SummaryResponseBody(summary)
+	body, err := v1CompactResponseBody(nil, "cpa_compact_special", summary)
 	if err != nil {
 		t.Fatalf("build V1 response: %v", err)
 	}
@@ -74,23 +72,137 @@ func TestV1SummaryResponseBodyRoundTripsSpecialCharacters(t *testing.T) {
 	}
 	var decoded struct {
 		Output []struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
+			Type             string `json:"type"`
+			ID               string `json:"id"`
+			EncryptedContent string `json:"encrypted_content"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("decode V1 response: %v", err)
 	}
-	if len(decoded.Output) != 1 || len(decoded.Output[0].Content) != 1 {
+	if len(decoded.Output) != 1 {
 		t.Fatalf("unexpected V1 output shape: %+v", decoded.Output)
 	}
 	item := decoded.Output[0]
-	if item.Type != "message" || item.Role != "assistant" || item.Content[0].Type != "output_text" || item.Content[0].Text != summary {
+	if item.Type != compactionType || item.ID != "cpa_compact_special" || item.EncryptedContent != summary {
 		t.Fatalf("V1 response changed protocol fields or summary: %+v", item)
+	}
+}
+
+func TestV1CompactResponseBodyMatchesRemoteRetentionContract(t *testing.T) {
+	raw := []json.RawMessage{
+		json.RawMessage(`{"type":"message","role":"system","content":"drop system"}`),
+		json.RawMessage(`{"type":"message","role":"developer","content":"keep developer","custom":"preserved"}`),
+		json.RawMessage(`{"type":"message","role":"user","content":"keep user"}`),
+		json.RawMessage(`{"type":"message","role":"assistant","content":"drop assistant"}`),
+		json.RawMessage(`{"type":"reasoning","encrypted_content":"drop reasoning"}`),
+		json.RawMessage(`{"type":"function_call","call_id":"drop tool"}`),
+		json.RawMessage(`{"type":"compaction","id":"cpa_compact_old","encrypted_content":"drop old state"}`),
+		json.RawMessage(`{"type":"compaction_trigger"}`),
+	}
+	body, err := v1CompactResponseBody(parseInputItems(raw), "cpa_compact_new", "new summary")
+	if err != nil {
+		t.Fatalf("build V1 response: %v", err)
+	}
+	var decoded struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode V1 response: %v", err)
+	}
+	if len(decoded.Output) != 3 {
+		t.Fatalf("output has %d items, want developer, user, compaction: %s", len(decoded.Output), body)
+	}
+	if !bytes.Equal(decoded.Output[0], raw[1]) || !bytes.Equal(decoded.Output[1], raw[2]) {
+		t.Fatalf("retained messages were not preserved verbatim: %s", body)
+	}
+	if strings.Contains(string(body), "drop ") || !strings.Contains(string(body), `"id":"cpa_compact_new"`) {
+		t.Fatalf("V1 retention leaked discarded state or lost new compaction: %s", body)
+	}
+}
+
+func TestV1AndV2UseIdenticalCompactionItem(t *testing.T) {
+	const (
+		itemID  = "cpa_compact_parity"
+		summary = "shared compact summary"
+	)
+	v1Body, err := v1CompactResponseBody(nil, itemID, summary)
+	if err != nil {
+		t.Fatalf("build V1 response: %v", err)
+	}
+	var v1 struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(v1Body, &v1); err != nil {
+		t.Fatalf("decode V1 response: %v", err)
+	}
+	if len(v1.Output) != 1 {
+		t.Fatalf("V1 output has %d items, want only the compaction item", len(v1.Output))
+	}
+
+	v2Events, err := v2SSEEvents(itemID, summary)
+	if err != nil {
+		t.Fatalf("build V2 events: %v", err)
+	}
+	frames := decodeSSEDataFrames(t, v2Events)
+	var v2 struct {
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal(frames[0], &v2); err != nil {
+		t.Fatalf("decode V2 output-item frame: %v", err)
+	}
+
+	var v1Item, v2Item map[string]any
+	if err := json.Unmarshal(v1.Output[0], &v1Item); err != nil {
+		t.Fatalf("decode V1 compaction item: %v", err)
+	}
+	if err := json.Unmarshal(v2.Item, &v2Item); err != nil {
+		t.Fatalf("decode V2 compaction item: %v", err)
+	}
+	v1Canonical, _ := json.Marshal(v1Item)
+	v2Canonical, _ := json.Marshal(v2Item)
+	if !bytes.Equal(v1Canonical, v2Canonical) {
+		t.Fatalf("V1 and V2 compaction items differ: V1=%s V2=%s", v1Canonical, v2Canonical)
+	}
+}
+
+func TestV1RecompactionConsumesOldStateAndEmitsOnlyNewestCompaction(t *testing.T) {
+	raw := []json.RawMessage{
+		json.RawMessage(`{"type":"compaction","id":"cpa_compact_old","encrypted_content":"old summary"}`),
+		json.RawMessage(`{"type":"message","role":"assistant","content":"old assistant artifact"}`),
+		json.RawMessage(`{"type":"message","role":"user","content":"new request"}`),
+	}
+	items := parseInputItems(raw)
+	summaryInput, err := buildSummaryRequestInput(items)
+	if err != nil {
+		t.Fatalf("build summary input: %v", err)
+	}
+	if len(summaryInput) != 3 || !strings.Contains(string(summaryInput[0]), "old summary") || strings.Contains(string(summaryInput[0]), compactionIDPrefix) {
+		t.Fatalf("old compact state was not restored for summarization: %s", summaryInput)
+	}
+
+	body, err := v1CompactResponseBody(items, "cpa_compact_new", "new summary")
+	if err != nil {
+		t.Fatalf("build V1 recompaction response: %v", err)
+	}
+	var decoded struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode V1 recompaction response: %v", err)
+	}
+	if len(decoded.Output) != 2 {
+		t.Fatalf("output has %d items, want retained user message plus newest compaction: %s", len(decoded.Output), body)
+	}
+	if !bytes.Equal(decoded.Output[0], raw[2]) {
+		t.Fatalf("new user message was not retained verbatim: %s", decoded.Output[0])
+	}
+	window := string(body)
+	if strings.Contains(window, "cpa_compact_old") || strings.Contains(window, "old summary") || strings.Contains(window, "old assistant artifact") {
+		t.Fatalf("stale compact state leaked into the replacement window: %s", body)
+	}
+	if !strings.Contains(window, `"id":"cpa_compact_new"`) || !strings.Contains(window, `"encrypted_content":"new summary"`) {
+		t.Fatalf("new compaction state is missing: %s", body)
 	}
 }
 

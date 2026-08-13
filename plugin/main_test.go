@@ -359,6 +359,30 @@ func TestHandleExecuteV1HostFailureReturnsStablePluginError(t *testing.T) {
 	}
 }
 
+func TestHandleExecuteV1RejectsNonArrayInputBeforeHostCallback(t *testing.T) {
+	installTestConfig(t, "rules:\n  - match: 'bridge-*'\n    action: bridge\n")
+	for name, body := range map[string][]byte{
+		"scalar input": []byte(`{"model":"bridge-test","input":"summarize this"}`),
+		"object input": []byte(`{"model":"bridge-test","input":{"type":"message","role":"user","content":"summarize this"}}`),
+		"malformed":    []byte(`{"model":"bridge-test","input":`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := handleMethod(pluginabi.MethodExecutorExecute, executorRequestJSON(t, rpcExecutorRequest{
+				ExecutorRequest: pluginapi.ExecutorRequest{
+					Model:           "bridge-test",
+					Alt:             altResponsesCompact,
+					Stream:          false,
+					OriginalRequest: body,
+				},
+			}))
+			pluginErrValue := mustPluginErr(t, err, errCodeCompactBridgeFailed)
+			if pluginErrValue.HTTPStatus != http.StatusBadGateway || pluginErrValue.Message != "bridged compaction failed" {
+				t.Fatalf("unexpected V1 input error payload: %+v", pluginErrValue)
+			}
+		})
+	}
+}
+
 func TestHandleExecuteV2HostFailureReturnsResponseFailedSSE(t *testing.T) {
 	installTestConfig(t, "rules:\n  - match: 'bridge-*'\n    action: bridge\n")
 	raw, err := handleMethod(pluginabi.MethodExecutorExecuteStream, executorRequestJSON(t, rpcExecutorRequest{

@@ -34,16 +34,17 @@ The main agent and concurrent sub-agents can select official or third-party mode
 
 Codex remote compaction has two protocol shapes, plus a replay step. The bridge handles each:
 
-- **V1** — intercepts the non-streaming `POST /v1/responses/compact` endpoint, summarizes the context through an ordinary model request, and returns a single assistant summary message.
+- **V1** — intercepts the non-streaming `POST /v1/responses/compact` endpoint, summarizes the context through an ordinary model request, and returns retained user/developer history plus a marked `compaction` item.
 - **V2** — detects a streaming `/v1/responses` request whose final input is a `compaction_trigger`, summarizes through an ordinary model request, and returns the `compaction` SSE item plus `response.completed` that Codex expects.
 - **Replay** — on later ordinary turns, converts the plugin's own `cpa_compact_*` plaintext state back into a normal user summary so context survives Responses→Chat conversion.
 - **Passthrough** — models you configure as native-compact-capable are forwarded unchanged.
 
-The `encrypted_content` field of the bridged V2 compaction item holds the **plaintext** summary. It is a compatibility marker (the `cpa_compact_*` ID), not encryption and not a trust, integrity, or confidentiality boundary. See [Security](#security).
+The `encrypted_content` field of a bridged V1 or V2 compaction item holds the **plaintext** summary. It is a compatibility marker (the `cpa_compact_*` ID), not encryption and not a trust, integrity, or confidentiality boundary. See [Security](#security).
 
 ## Status
 
 - **Confirmed:** CLIProxyAPI **v7.2.120**, **linux/amd64** — build and integration CI.
+- **Compatibility regression tested:** exact CLIProxyAPI **v7.2.125** source in the local real-CPA integration harness; this is not a published linux/amd64 artifact claim.
 - **Prebuilt binaries** for linux/amd64 will be published on [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases). See [Installation](#installation).
 - **Experimental / unverified:** other CLIProxyAPI versions, macOS/Windows builds, and other CPU architectures. Build the library yourself for your platform; behavior is not guaranteed there.
 
@@ -52,7 +53,7 @@ The `encrypted_content` field of the bridged V2 compaction item holds the **plai
 - ⚠️ **Not affiliated with OpenAI or CLIProxyAPI.** This is independent community software. It is not endorsed by or certified by OpenAI or CLIProxyAPI's maintainers. "Codex" and "OpenAI" are trademarks of their respective owners.
 - The plugin does not vet or authenticate upstream providers. **You are responsible** for ensuring your use of any provider, account, API key, rate limit, and quota complies with the applicable terms of service. This project provides no guarantee of legal, regulatory, or contractual compliance.
 - When a model matches a `bridge` rule, the configured summary provider receives a **compressed/summarized version of your conversation context**.
-- In V2 the plaintext summary is placed in `encrypted_content`; it is not encrypted (see above).
+- In V1 and V2 the plaintext summary is placed in `encrypted_content`; it is not encrypted (see above).
 
 ## Installation
 
@@ -131,7 +132,7 @@ pinned checkout automatically.
 - [Protocol contract](docs/compact-protocol.md)
 - [Configuration](docs/configuration.md)
 - [Domain glossary](CONTEXT.md)
-- [Architecture decision: plaintext V2 compaction items](docs/adr/0001-use-plaintext-v2-compaction-items.md)
+- [Architecture decision: plaintext bridged compaction items](docs/adr/0001-use-plaintext-v2-compaction-items.md)
 
 ## Contributing
 

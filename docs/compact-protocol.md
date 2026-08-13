@@ -4,21 +4,26 @@ This contract applies only to a request matched by a `bridge` Bridge Rule. Nativ
 
 ## V1
 
-`POST /v1/responses/compact` is non-streaming. The facade summarizes through its Summary Model and returns one V1 Summary Message:
+`POST /v1/responses/compact` is non-streaming. The facade summarizes through its Summary Model and returns a canonical compacted window: the request's user/developer messages followed by one marked compaction item.
 
 ```json
 {
   "output": [
     {
       "type": "message",
-      "role": "assistant",
-      "content": [{"type": "output_text", "text": "<summary>"}]
+      "role": "user",
+      "content": [{"type": "input_text", "text": "<retained user message>"}]
+    },
+    {
+      "type": "compaction",
+      "id": "cpa_compact_<uuid>",
+      "encrypted_content": "<summary>"
     }
   ]
 }
 ```
 
-No SSE event and no `response.completed` are part of V1. Codex parses `output` directly and preserves assistant messages in the replacement history.
+No SSE event and no `response.completed` are part of V1. Codex parses `output` directly as its replacement history. The bridge follows the current remote endpoint behavior: retain only `message` items with role `user` or `developer`, preserve those items as received, discard protocol artifacts, then append the newest compaction item.
 
 ## V2
 
@@ -31,7 +36,7 @@ data: {"type":"response.completed","response":{"id":"resp_cpa_compact_<uuid>"}}
 
 ```
 
-`encrypted_content` contains the plaintext summary directly. `cpa_compact_<uuid>` is an item marker, not the completed response ID. The facade emits no partial summary, extra output item, invented token usage, or synthetic `response.created` event.
+In both V1 and V2, `encrypted_content` contains the plaintext summary directly. `cpa_compact_<uuid>` is an item marker, not a native encrypted state or the completed response ID. The V2 facade emits no partial summary, extra output item, invented token usage, or synthetic `response.created` event.
 
 ## WebSocket transport
 

@@ -27,7 +27,7 @@ boundary. Read the following before deploying it.
 
 ### `encrypted_content` is not encrypted
 
-In V2, the bridged summary is placed in the `encrypted_content` field of the
+In V1 and V2, the bridged summary is placed in the `encrypted_content` field of the
 compaction item. Despite the field name, this value is **plaintext**. It is a
 compatibility marker (the item `id` begins with `cpa_compact_`) so the plugin
 can recognize its own state on later turns. It provides **no** confidentiality,

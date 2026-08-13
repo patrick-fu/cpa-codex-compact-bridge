@@ -220,12 +220,62 @@ func TestV1Compact(t *testing.T) {
 	if response.Header.Get("Content-Type") == "" || strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("V1 compact content-type = %q, want non-streaming JSON", response.Header.Get("Content-Type"))
 	}
-	if !strings.Contains(string(response.Body), "fixture compact summary") || !strings.Contains(string(response.Body), `"output"`) {
-		t.Fatalf("V1 compact response = %s", response.Body)
+	var compacted struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(response.Body, &compacted); err != nil {
+		t.Fatalf("decode V1 compact response: %v; body=%s", err, response.Body)
+	}
+	if len(compacted.Output) != 2 {
+		t.Fatalf("V1 compact output has %d items, want retained history plus compaction: %s", len(compacted.Output), response.Body)
+	}
+	var retained struct {
+		Type string `json:"type"`
+		Role string `json:"role"`
+	}
+	if err := json.Unmarshal(compacted.Output[0], &retained); err != nil {
+		t.Fatalf("decode retained V1 item: %v", err)
+	}
+	if retained.Type != "message" || retained.Role != "user" || !strings.Contains(string(compacted.Output[0]), "history to compact") {
+		t.Fatalf("V1 compact did not retain the canonical user history: %s", compacted.Output[0])
+	}
+	var item struct {
+		Type             string `json:"type"`
+		ID               string `json:"id"`
+		EncryptedContent string `json:"encrypted_content"`
+	}
+	if err := json.Unmarshal(compacted.Output[1], &item); err != nil {
+		t.Fatalf("decode V1 compaction item: %v", err)
+	}
+	if item.Type != "compaction" || !strings.HasPrefix(item.ID, "cpa_compact_") || item.EncryptedContent != "fixture compact summary" {
+		t.Fatalf("V1 compact item does not match V2's persisted state shape: %+v", item)
 	}
 	calls := h.upstream.snapshot()
 	if len(calls) != 1 || !strings.Contains(string(calls[0].Body), `"model":"summary-test"`) {
 		t.Fatalf("V1 compact must call only summary model: %#v", calls)
+	}
+
+	// Codex installs the V1 output array as replacement_history. Replaying that
+	// exact window must take the same cpa_compact_ normalization path as V2.
+	h.upstream.reset()
+	continuationBody, err := json.Marshal(map[string]any{
+		"model": bridgeModel,
+		"input": compacted.Output,
+	})
+	if err != nil {
+		t.Fatalf("encode V1 continuation: %v", err)
+	}
+	continuation := h.post(t, "/v1/responses", continuationBody)
+	if continuation.StatusCode != http.StatusOK {
+		t.Fatalf("V1 continuation status = %d, body=%s\nCPA logs:\n%s", continuation.StatusCode, continuation.Body, h.logs.String())
+	}
+	calls = h.upstream.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("V1 continuation calls = %#v", calls)
+	}
+	upstreamBody := string(calls[0].Body)
+	if strings.Contains(upstreamBody, `"type":"compaction"`) || strings.Contains(upstreamBody, item.ID) || !strings.Contains(upstreamBody, "fixture compact summary") {
+		t.Fatalf("V1 continuation did not normalize the compacted rollout window: %s", upstreamBody)
 	}
 }
 
@@ -247,6 +297,94 @@ func TestV2CompactSSE(t *testing.T) {
 	}
 	if !strings.HasPrefix(stringField(events[1], "response.id"), "resp_cpa_compact_") {
 		t.Fatalf("V2 completed event = %s", events[1])
+	}
+}
+
+func TestCodexV1V2CompactedHistoryAndFollowUpParity(t *testing.T) {
+	h := newHarness(t)
+
+	v1 := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact.json"))
+	if v1.StatusCode != http.StatusOK {
+		t.Fatalf("V1 compact status = %d, body=%s", v1.StatusCode, v1.Body)
+	}
+	var v1Body struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(v1.Body, &v1Body); err != nil {
+		t.Fatalf("decode V1 compact body: %v", err)
+	}
+
+	v2 := h.post(t, "/v1/responses", fixture(t, "v2-compact.json"))
+	if v2.StatusCode != http.StatusOK {
+		t.Fatalf("V2 compact status = %d, body=%s", v2.StatusCode, v2.Body)
+	}
+	events := parseSSE(t, v2.Body)
+	if len(events) != 2 {
+		t.Fatalf("V2 compact events = %q", v2.Body)
+	}
+	var done struct {
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(events[0]), &done); err != nil {
+		t.Fatalf("decode V2 output item event: %v", err)
+	}
+
+	// Latest Codex installs V1's output directly. For V2 it retains the same
+	// user history locally, then appends the single streamed compaction item.
+	var v2Request struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(fixture(t, "v2-compact.json"), &v2Request); err != nil {
+		t.Fatalf("decode V2 fixture: %v", err)
+	}
+	v2History := append([]json.RawMessage(nil), v2Request.Input[:len(v2Request.Input)-1]...)
+	v2History = append(v2History, done.Item)
+	if len(v1Body.Output) != len(v2History) {
+		t.Fatalf("replacement history lengths differ: V1=%d V2=%d", len(v1Body.Output), len(v2History))
+	}
+	for i := range v1Body.Output {
+		var left, right map[string]any
+		if err := json.Unmarshal(v1Body.Output[i], &left); err != nil {
+			t.Fatalf("decode V1 history item %d: %v", i, err)
+		}
+		if err := json.Unmarshal(v2History[i], &right); err != nil {
+			t.Fatalf("decode V2 history item %d: %v", i, err)
+		}
+		delete(left, "id")
+		delete(right, "id")
+		leftJSON, _ := json.Marshal(left)
+		rightJSON, _ := json.Marshal(right)
+		if !bytes.Equal(leftJSON, rightJSON) {
+			t.Fatalf("replacement history item %d differs after transport-only ID removal: V1=%s V2=%s", i, leftJSON, rightJSON)
+		}
+	}
+
+	h.upstream.reset()
+	postContinuation := func(history []json.RawMessage) []byte {
+		body, err := json.Marshal(map[string]any{"model": bridgeModel, "input": history})
+		if err != nil {
+			t.Fatalf("encode continuation: %v", err)
+		}
+		response := h.post(t, "/v1/responses", body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("continuation status = %d, body=%s", response.StatusCode, response.Body)
+		}
+		calls := h.upstream.snapshot()
+		return calls[len(calls)-1].Body
+	}
+	v1FollowUp := postContinuation(v1Body.Output)
+	v2FollowUp := postContinuation(v2History)
+	var v1Upstream, v2Upstream any
+	if err := json.Unmarshal(v1FollowUp, &v1Upstream); err != nil {
+		t.Fatalf("decode V1 follow-up upstream body: %v", err)
+	}
+	if err := json.Unmarshal(v2FollowUp, &v2Upstream); err != nil {
+		t.Fatalf("decode V2 follow-up upstream body: %v", err)
+	}
+	v1JSON, _ := json.Marshal(v1Upstream)
+	v2JSON, _ := json.Marshal(v2Upstream)
+	if !bytes.Equal(v1JSON, v2JSON) {
+		t.Fatalf("follow-up upstream bodies differ: V1=%s V2=%s", v1JSON, v2JSON)
 	}
 }
 

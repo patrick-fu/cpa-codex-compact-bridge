@@ -273,6 +273,10 @@ func detectV2TriggerFromRequest(body []byte) bool {
 
 // executeV1Compact handles the non-streaming /responses/compact endpoint.
 func executeV1Compact(cfg Config, req rpcExecutorRequest, decision matchDecision) ([]byte, error) {
+	items, ok := parseRequestInputItems(req.OriginalRequest)
+	if !ok {
+		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: "bridged compaction failed", HTTPStatus: 502}
+	}
 	summaryModel := pickSummaryModel(req, decision)
 	summary, err := generateSummary(cfg, req, summaryModel, req.HostCallbackID)
 	if err != nil {
@@ -282,7 +286,8 @@ func executeV1Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 			HTTPStatus: 502,
 		}
 	}
-	body, err := v1SummaryResponseBody(summary)
+	itemID := compactionIDPrefix + uuid.NewString()
+	body, err := v1CompactResponseBody(items, itemID, summary)
 	if err != nil {
 		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: "bridged compaction failed", HTTPStatus: 502}
 	}

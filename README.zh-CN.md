@@ -10,16 +10,17 @@ English version: [README.md](README.md).
 
 Codex remote compaction 有两种协议形态，外加一个回放步骤。bridge 分别处理：
 
-- **V1** — 拦截非流式 `POST /v1/responses/compact` 端点，通过普通模型请求生成摘要，返回单条 assistant summary 消息。
+- **V1** — 拦截非流式 `POST /v1/responses/compact` 端点，通过普通模型请求生成摘要，返回保留的 user/developer 历史加一条带标记的 `compaction` item。
 - **V2** — 识别流式 `/v1/responses` 请求末尾的 `compaction_trigger`，通过普通模型请求生成摘要，返回 Codex 接受的 `compaction` SSE item 与 `response.completed`。
 - **回放（Replay）** — 在后续普通轮次，把插件自己的 `cpa_compact_*` 明文状态转换回普通 user summary，避免 Responses→Chat 转换时丢失上下文。
 - **透传（Passthrough）** — 你配置为原生支持 compact 的模型保持原样转发。
 
-V2 compaction item 的 `encrypted_content` 字段保存的是**明文**摘要。它是兼容标记（`cpa_compact_*` ID），不是加密，也不是可信、完整性或机密性边界。见[安全说明](#安全说明)。
+V1 与 V2 compaction item 的 `encrypted_content` 字段保存的是**明文**摘要。它是兼容标记（`cpa_compact_*` ID），不是加密，也不是可信、完整性或机密性边界。见[安全说明](#安全说明)。
 
 ## 状态
 
 - **已确认：** CLIProxyAPI **v7.2.120**、**linux/amd64** —— 构建与集成 CI。
+- **兼容回归已通过：** 使用 CLIProxyAPI **v7.2.125** 精确源码在本地真实 CPA 集成 harness 验证；这不代表已发布 linux/amd64 产物。
 - **预编译二进制** linux/amd64 发布后将可用于 [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases)。见[安装](#安装)。
 - **实验性 / 未验证：** 其他 CLIProxyAPI 版本、macOS/Windows 构建、其他 CPU 架构。需自行编译对应平台的动态库，这些平台的行为不保证。
 
@@ -27,7 +28,7 @@ V2 compaction item 的 `encrypted_content` 字段保存的是**明文**摘要。
 
 - 插件不审查、不认证上游 Provider。**你需自行确保**对任何 Provider、账号、API key、速率限制与配额的使用符合相应服务条款。本项目不提供任何法律、监管或合同合规保证。
 - 当模型命中 `bridge` 规则时，配置的摘要 Provider 会收到**压缩/摘要后的会话上下文**。
-- V2 的明文摘要置于 `encrypted_content`；它并非加密（见上）。
+- V1 与 V2 的明文摘要置于 `encrypted_content`；它并非加密（见上）。
 
 ## 安装
 
@@ -105,7 +106,7 @@ CPA_SOURCE_DIR=/path/to/CLIProxyAPI (cd integration && go test ./... -count=1)
 - [协议契约](docs/compact-protocol.md)
 - [配置](docs/configuration.md)
 - [领域术语表](CONTEXT.md)
-- [架构决策：明文 V2 compaction item](docs/adr/0001-use-plaintext-v2-compaction-items.md)
+- [架构决策：明文 bridge compaction item](docs/adr/0001-use-plaintext-v2-compaction-items.md)
 
 ## 贡献
 

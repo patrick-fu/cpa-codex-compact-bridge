@@ -82,12 +82,13 @@ jobs:
           mkdir -p ../stage
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -buildmode=c-shared \
-            -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=$VERSION" \
+            -ldflags "-X main.pluginVersion=$VERSION" \
             -o ../stage/cpa-codex-compact-bridge.so .
           # c-shared also emits a header next to the library; keep the stage
           # directory limited to the shared object so the zip root is exact.
           rm -f ../stage/cpa-codex-compact-bridge.h
           file ../stage/cpa-codex-compact-bridge.so
+          strings ../stage/cpa-codex-compact-bridge.so | grep -F "$VERSION"
 
       - name: Package release archive and checksums
         id: package

@@ -26,11 +26,11 @@ The policy that rejects a failed bridged compaction instead of forwarding Codex-
 
 ## Plaintext Compaction Item
 
-A bridged V2 `compaction` item whose `encrypted_content` is the generated plaintext summary and whose `id` begins `cpa_compact_`. The marker lets the Compact Bridge Facade safely recognize and normalize its own state on later turns. It is intentionally a best-effort interoperability form rather than an opaque, provider-verifiable native compaction state.
+A bridged V1 or V2 `compaction` item whose `encrypted_content` is the generated plaintext summary and whose `id` begins `cpa_compact_`. The marker lets the Compact Bridge Facade safely recognize and normalize its own state on later turns. It is intentionally a best-effort interoperability form rather than an opaque, provider-verifiable native compaction state.
 
-## V1 Summary Message
+## Canonical Compacted Window
 
-The single ordinary assistant message emitted as the compacted V1 replacement window. Unlike a Plaintext Compaction Item, it is normal Responses message content and needs no replay normalization.
+The replacement history Codex installs after remote compaction. V1 receives the whole window from `/responses/compact`; V2 retains eligible history locally and appends the streamed compaction item. The two transports must converge on equivalent retained history plus one Plaintext Compaction Item.
 
 ## WebSocket Bridged Turn
 

@@ -5,23 +5,27 @@ import (
 	"fmt"
 )
 
-// v1SummaryResponseBody builds the non-streaming V1 compact response body:
-// {"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<summary>"}]}]}
-func v1SummaryResponseBody(summary string) ([]byte, error) {
+// v1CompactResponseBody builds the non-streaming V1 compact response body.
+// It mirrors the current remote compact contract: retain user/developer input
+// messages and append one canonical compaction item carrying the summary.
+func v1CompactResponseBody(items []inputItem, itemID, summary string) ([]byte, error) {
+	output := make([]json.RawMessage, 0, len(items)+1)
+	for _, item := range items {
+		if item.Type == "message" && (item.Role == "user" || item.Role == "developer") {
+			output = append(output, item.Raw)
+		}
+	}
+	compactionItem, err := v2CompactionItemJSON(itemID, summary)
+	if err != nil {
+		return nil, err
+	}
+	output = append(output, compactionItem)
 	body := map[string]any{
-		"output": []map[string]any{
-			{
-				"type": "message",
-				"role": "assistant",
-				"content": []map[string]any{
-					{"type": "output_text", "text": summary},
-				},
-			},
-		},
+		"output": output,
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("encode v1 summary body: %w", err)
+		return nil, fmt.Errorf("encode v1 compact body: %w", err)
 	}
 	return encoded, nil
 }

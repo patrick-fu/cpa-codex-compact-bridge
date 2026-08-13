@@ -46,11 +46,16 @@ jobs:
 
       - name: Build c-shared ABI library
         working-directory: plugin
+        env:
+          VERSION: 0.1.0-ci
         run: |
           mkdir -p ../dist/linux-amd64
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -buildmode=c-shared -o ../dist/linux-amd64/cpa-codex-compact-bridge.so .
+            go build -buildmode=c-shared \
+              -ldflags "-X main.pluginVersion=$VERSION" \
+              -o ../dist/linux-amd64/cpa-codex-compact-bridge.so .
           file ../dist/linux-amd64/cpa-codex-compact-bridge.so
+          strings ../dist/linux-amd64/cpa-codex-compact-bridge.so | grep -F "$VERSION"
           (
             cd ../dist/linux-amd64
             sha256sum cpa-codex-compact-bridge.so > cpa-codex-compact-bridge.so.sha256
