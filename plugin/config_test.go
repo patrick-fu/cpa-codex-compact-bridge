@@ -16,6 +16,7 @@ func TestLoadConfigDefault(t *testing.T) {
 
 func TestLoadConfigRules(t *testing.T) {
 	raw := []byte(`
+compact_prompt: "Preserve exact task state."
 rules:
   - match: "glm-*"
     action: bridge
@@ -36,6 +37,9 @@ on_no_match: passthrough
 	}
 	if cfg.Rules[0].SummaryModel != "glm-5.2" {
 		t.Fatalf("rule0 summary = %q", cfg.Rules[0].SummaryModel)
+	}
+	if cfg.CompactPrompt != "Preserve exact task state." {
+		t.Fatalf("CompactPrompt = %q", cfg.CompactPrompt)
 	}
 }
 

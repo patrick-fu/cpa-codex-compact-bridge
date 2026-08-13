@@ -65,6 +65,8 @@ plugins:
     cpa-codex-compact-bridge:
       enabled: true
       priority: 100
+      # 可选。缺省时使用 Codex 内置的 local compact 提示词。
+      compact_prompt: "为下一个 coding agent 生成摘要。"
       rules:
         # 第三方模型：bridge
         - match: "glm-*"
@@ -78,7 +80,7 @@ plugins:
 
 规则按原始客户端请求模型名、**区分大小写**的 glob 从上到下首个命中。`bridge` 让插件接管该模型的 compact 轮次并启用回放规范化；`passthrough` 让所有请求留在 CPA 内置路由。Provider 是否有原生 compact 能力由你通过 `bridge` / `passthrough` 规则表达——插件不会猜测上游能力。
 
-`summary_model` 可选；缺省时用请求模型发起普通摘要请求。`on_no_match` 仅接受 `passthrough`。
+`summary_model` 可选；缺省时用请求模型发起普通摘要请求。`compact_prompt` 也可选；缺省或为空时，插件使用当前 Codex local compact 的默认提示词。只有当客户端配置了自定义 Codex `compact_prompt`，且希望 Bridge 使用同一指令时才需要显式设置。远端 compact 请求不会携带客户端配置的提示词，因此插件无法自动发现该覆盖。`on_no_match` 仅接受 `passthrough`。
 
 CLIProxyAPI **Home 模式会禁用 plugin executor routing**，因此不能与 `bridge` 规则同时使用。
 

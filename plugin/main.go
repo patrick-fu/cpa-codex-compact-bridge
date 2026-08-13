@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"unsafe"
 
 	"github.com/google/uuid"
@@ -382,7 +383,7 @@ func generateSummary(cfg Config, req rpcExecutorRequest, summaryModel, hostCallb
 	if err != nil {
 		return "", err
 	}
-	summaryBody, err := buildSummaryRequestBody(req, summaryModel, cleanInput)
+	summaryBody, err := buildSummaryRequestBody(req, summaryModel, cleanInput, cfg.CompactPrompt)
 	if err != nil {
 		return "", err
 	}
@@ -409,7 +410,18 @@ func generateSummary(cfg Config, req rpcExecutorRequest, summaryModel, hostCallb
 
 // buildSummaryRequestBody constructs the summary request body: keep the model,
 // disable streaming, and replace input with the de-compacted items.
-func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanInput []json.RawMessage) ([]byte, error) {
+const codexLocalCompactPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+`
+
+func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanInput []json.RawMessage, configuredPrompt string) ([]byte, error) {
 	var parsed map[string]json.RawMessage
 	if len(req.OriginalRequest) > 0 {
 		if err := json.Unmarshal(req.OriginalRequest, &parsed); err != nil {
@@ -420,10 +432,14 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 	}
 	parsed["model"] = jsonRawString(summaryModel)
 	parsed["stream"] = jsonRawFalse()
+	compactPrompt := codexLocalCompactPrompt
+	if strings.TrimSpace(configuredPrompt) != "" {
+		compactPrompt = configuredPrompt
+	}
 	compactInstruction, err := json.Marshal(map[string]any{
 		"type":    "message",
 		"role":    "user",
-		"content": "Summarize the conversation and current task for a successor coding agent. Preserve goals, decisions, constraints, completed work, important file paths, commands and results, and unresolved risks. Return only the handoff summary.",
+		"content": compactPrompt,
 	})
 	if err != nil {
 		return nil, fmtSummaryBody(err)

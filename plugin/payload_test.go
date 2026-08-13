@@ -463,10 +463,10 @@ func TestCompactFailureMessageIsSanitized(t *testing.T) {
 	}
 }
 
-func TestBuildSummaryRequestBodyAddsHandoffInstruction(t *testing.T) {
+func TestBuildSummaryRequestBodyUsesCodexLocalDefaultPrompt(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"model":"bridge-test","stream":true,"input":[{"type":"message","role":"user","content":"old"}]}`)
-	body, err := buildSummaryRequestBody(req, "summary-test", []json.RawMessage{json.RawMessage(`{"type":"message","role":"user","content":"old"}`)})
+	body, err := buildSummaryRequestBody(req, "summary-test", []json.RawMessage{json.RawMessage(`{"type":"message","role":"user","content":"old"}`)}, "")
 	if err != nil {
 		t.Fatalf("build summary request: %v", err)
 	}
@@ -481,8 +481,46 @@ func TestBuildSummaryRequestBodyAddsHandoffInstruction(t *testing.T) {
 	if parsed.Model != "summary-test" || parsed.Stream {
 		t.Fatalf("summary request model/stream = %q/%v", parsed.Model, parsed.Stream)
 	}
-	if len(parsed.Input) != 2 || !strings.Contains(string(parsed.Input[1]), "Summarize the conversation") {
+	var instruction struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	if len(parsed.Input) != 2 {
 		t.Fatalf("summary request input = %s", parsed.Input)
+	}
+	if err := json.Unmarshal(parsed.Input[1], &instruction); err != nil {
+		t.Fatalf("decode compact instruction: %v", err)
+	}
+	want := "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\n" +
+		"Include:\n" +
+		"- Current progress and key decisions made\n" +
+		"- Important context, constraints, or user preferences\n" +
+		"- What remains to be done (clear next steps)\n" +
+		"- Any critical data, examples, or references needed to continue\n\n" +
+		"Be concise, structured, and focused on helping the next LLM seamlessly continue the work.\n"
+	if instruction.Type != "message" || instruction.Role != "user" || instruction.Content != want {
+		t.Fatalf("compact instruction = %+v, want exact Codex local prompt %q", instruction, want)
+	}
+}
+
+func TestBuildSummaryRequestBodyUsesConfiguredCompactPrompt(t *testing.T) {
+	req := rpcExecutorRequest{}
+	req.OriginalRequest = []byte(`{"model":"bridge-test","input":[]}`)
+	body, err := buildSummaryRequestBody(req, "summary-test", nil, "Preserve ticket CPA-42 and the exact next command.")
+	if err != nil {
+		t.Fatalf("build summary request: %v", err)
+	}
+	var parsed struct {
+		Input []struct {
+			Content string `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode summary request: %v", err)
+	}
+	if len(parsed.Input) != 1 || parsed.Input[0].Content != "Preserve ticket CPA-42 and the exact next command." {
+		t.Fatalf("summary input = %+v", parsed.Input)
 	}
 }
 
@@ -496,7 +534,7 @@ func TestBuildSummaryRequestBodyPreservesRequestFieldsAndOverridesProtocolFields
 		"input":[{"type":"message","role":"user","content":"old"}]
 	}`)
 	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":"keep \"this\""}`)}
-	body, err := buildSummaryRequestBody(req, "summary-model", cleanInput)
+	body, err := buildSummaryRequestBody(req, "summary-model", cleanInput, "")
 	if err != nil {
 		t.Fatalf("build summary request: %v", err)
 	}
@@ -518,7 +556,7 @@ func TestBuildSummaryRequestBodyPreservesRequestFieldsAndOverridesProtocolFields
 	if err := json.Unmarshal(parsed["input"], &input); err != nil {
 		t.Fatalf("decode summary input: %v", err)
 	}
-	if len(input) != 2 || input[0].Content != `keep "this"` || input[1].Type != "message" || input[1].Role != "user" || !strings.Contains(input[1].Content, "Summarize the conversation") {
+	if len(input) != 2 || input[0].Content != `keep "this"` || input[1].Type != "message" || input[1].Role != "user" || input[1].Content != codexLocalCompactPrompt {
 		t.Fatalf("unexpected summary input: %+v", input)
 	}
 }
@@ -526,7 +564,7 @@ func TestBuildSummaryRequestBodyPreservesRequestFieldsAndOverridesProtocolFields
 func TestBuildSummaryRequestBodyRejectsMalformedOriginalRequest(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"input":`)
-	_, err := buildSummaryRequestBody(req, "summary-model", nil)
+	_, err := buildSummaryRequestBody(req, "summary-model", nil, "")
 	if err == nil || !strings.Contains(err.Error(), "summary_encode_failed") {
 		t.Fatalf("expected wrapped malformed-request error, got %v", err)
 	}

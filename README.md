@@ -90,6 +90,8 @@ plugins:
     cpa-codex-compact-bridge:
       enabled: true
       priority: 100
+      # Optional. Defaults to Codex's built-in local compact prompt.
+      compact_prompt: "Summarize for the next coding agent."
       rules:
         # Third-party models: bridge
         - match: "glm-*"
@@ -103,7 +105,7 @@ plugins:
 
 Rules are evaluated in order against the original client-requested model using **case-sensitive** glob matching; the first match wins. `bridge` makes the plugin own that model's compact turns and enables replay normalization; `passthrough` leaves every request on CPA's built-in route. Whether a provider has native compact capability is expressed by you through `bridge` / `passthrough` rules — the plugin does not guess upstream capability.
 
-`summary_model` is optional; when absent, the request model is used for the ordinary summary request. `on_no_match` accepts only `passthrough`.
+`summary_model` is optional; when absent, the request model is used for the ordinary summary request. `compact_prompt` is also optional; when absent or blank, the plugin uses the current Codex local-compaction default prompt. Set it only when the client uses a custom Codex `compact_prompt` and you want bridged compaction to use the same instruction. The remote compact request does not carry the client's configured prompt, so the plugin cannot discover that override automatically. `on_no_match` accepts only `passthrough`.
 
 CLIProxyAPI **Home mode disables plugin executor routing**, so it cannot be used together with a `bridge` rule.
 

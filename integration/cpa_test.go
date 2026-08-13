@@ -66,7 +66,7 @@ func newFakeUpstream() *fakeUpstream {
 		}
 		_ = json.Unmarshal(body, &request)
 		text := "delegated ordinary response"
-		if strings.Contains(string(body), "Summarize the conversation and current task") {
+		if strings.Contains(string(body), "You are performing a CONTEXT CHECKPOINT COMPACTION") {
 			text = "fixture compact summary"
 		}
 		if request.Stream {
@@ -88,6 +88,30 @@ func (f *fakeUpstream) snapshot() []upstreamRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]upstreamRequest(nil), f.calls...)
+}
+
+func TestSummaryRequestUsesCodexLocalCompactPrompt(t *testing.T) {
+	h := newHarness(t)
+	response := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact.json"))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("V1 compact status = %d, body=%s", response.StatusCode, response.Body)
+	}
+	calls := h.upstream.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("summary upstream calls = %d, want 1", len(calls))
+	}
+	var request struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(calls[0].Body, &request); err != nil {
+		t.Fatalf("decode summary request: %v", err)
+	}
+	if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != "user" || request.Messages[len(request.Messages)-1].Content != "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.\n" {
+		t.Fatalf("summary request did not use the Codex local compact prompt: messages=%+v body=%s", request.Messages, calls[0].Body)
+	}
 }
 
 func (f *fakeUpstream) reset() {

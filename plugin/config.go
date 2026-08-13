@@ -25,10 +25,11 @@ type Rule struct {
 
 // Config is the plugin configuration block (plugins.configs.<pluginID>).
 type Config struct {
-	Enabled   bool   `yaml:"enabled"`
-	Priority  int    `yaml:"priority"`
-	Rules     []Rule `yaml:"rules"`
-	OnNoMatch Action `yaml:"on_no_match"`
+	Enabled       bool   `yaml:"enabled"`
+	Priority      int    `yaml:"priority"`
+	Rules         []Rule `yaml:"rules"`
+	OnNoMatch     Action `yaml:"on_no_match"`
+	CompactPrompt string `yaml:"compact_prompt"`
 }
 
 // loadConfig parses the YAML configuration bytes into a Config. It validates
