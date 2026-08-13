@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: router-for-me/CLIProxyAPI
-          ref: ea37d13a9eced4af835cad10bcb030d770a5ba88 # v7.2.120
+          ref: 2e6b1d83f6c304a102aa33c1faf0a4f94d0d331e # v7.2.125
           path: cpa
 
       - name: Set up Go
@@ -46,9 +46,8 @@ jobs:
 
       - name: Build c-shared ABI library
         working-directory: plugin
-        env:
-          VERSION: 0.1.0-ci
         run: |
+          VERSION="0.1.1-rc.${GITHUB_SHA::7}"
           mkdir -p ../dist/linux-amd64
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -buildmode=c-shared \
