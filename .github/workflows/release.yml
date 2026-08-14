@@ -19,12 +19,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout pinned CLIProxyAPI (v7.2.120)
+      - name: Checkout pinned CLIProxyAPI (v7.2.125)
         # actions/checkout v5.1.0
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: router-for-me/CLIProxyAPI
-          ref: ea37d13a9eced4af835cad10bcb030d770a5ba88 # v7.2.120
+          ref: 2e6b1d83f6c304a102aa33c1faf0a4f94d0d331e # v7.2.125
           path: cpa
 
       - name: Set up Go

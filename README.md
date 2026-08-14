@@ -1,63 +1,95 @@
 # cpa-codex-compact-bridge
 
+[![Build Linux Plugin](https://github.com/patrick-fu/cpa-codex-compact-bridge/actions/workflows/build-linux-plugin.yml/badge.svg?branch=main)](https://github.com/patrick-fu/cpa-codex-compact-bridge/actions/workflows/build-linux-plugin.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 [中文 README](README.zh-CN.md)
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) native plugin that keeps Codex remote compaction enabled globally, then chooses the correct compaction path per model: native-capable models pass through unchanged, while unsupported third-party models are bridged through an ordinary summary call.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) native plugin that preserves native Codex remote compaction for capable models and bridges remote compaction to ordinary summary calls for explicitly configured third-party models.
 
 ![Model selection: native remote-compaction models pass through unchanged, third-party models are bridged](docs/assets/model-selection.webp)
 
-*One Codex setup can expose official GPT and third-party models side by side; the bridge chooses compaction handling per model.*
+## The problem
 
-## The problem it solves
+A single Codex provider can expose official GPT models and third-party models through the same CLIProxyAPI endpoint. Codex decides whether that provider uses local or remote compaction at the provider level, but compact capability actually varies by upstream model.
 
-Codex decides whether to use remote compaction from the configured model provider. Once remote compaction is enabled, compact turns contain protocol-specific requests and state — a `POST /v1/responses/compact` call in V1 or a streaming `compaction_trigger` in V2. Official GPT endpoints understand that protocol; most third-party providers do not, so their compact turns fail with an unsupported request or format error.
+When remote compaction is enabled, Codex uses protocol-specific requests:
 
-This plugin keeps remote compaction available to official GPT models without forcing third-party models to understand it. CLIProxyAPI applies rules to the requested model: native-capable models stay on the original remote-compaction path, while other models receive an ordinary summary request and a bridge-generated response in the shape Codex expects.
+- legacy remote compact calls `POST /v1/responses/compact`;
+- current remote compact appends a `compaction_trigger` to a streaming `/v1/responses` request;
+- later turns replay the returned `compaction` state.
 
-## Why not just rename the provider?
+Native-capable endpoints understand those requests. Many third-party providers accept ordinary model requests but do not implement either compact transport or its replay state, so a long-running session fails exactly when compaction is needed.
 
-The simplest workaround is to change the Codex model provider `name` so Codex no longer treats it as remote-compaction-capable. That forces local compaction and avoids sending remote-compaction items to third-party models, but it applies to the whole provider. Official GPT models routed through the same CLIProxyAPI endpoint also lose provider-native remote compaction and its higher-quality summaries.
+Renaming the Codex provider to force local compaction avoids those remote requests, but it changes the behavior of every model behind that provider. Native-capable GPT models then lose their original remote path too.
 
-The bridge keeps the provider configured for remote compaction and moves the capability decision to per-model rules inside CLIProxyAPI. You keep the best path for both model classes instead of choosing one global compromise.
+## The goal
+
+Move the compact-capability decision from one provider-wide switch to explicit per-model rules inside CLIProxyAPI:
+
+- preserve CPA's native path for models that already support remote compaction;
+- bridge only the third-party models selected by the operator;
+- return the compact structure Codex expects for both remote transports;
+- keep later continuation usable without forwarding foreign opaque state;
+- fail closed when safe continuation cannot be established.
+
+## The solution
+
+The plugin evaluates ordered rules against the original client-requested model. The first match wins.
+
+```text
+Codex compact request
+        |
+        +-- passthrough rule --> CPA native compact route --> native provider
+        |
+        `-- bridge rule ------> ordinary summary request --> cpa_compact_* item
+                                                        |
+next ordinary turn <------------------------------------'
+        |
+        `-- cpa_compact_* is restored as a normal user summary
+            before the third-party provider translation
+```
+
+For a `bridge` rule, the plugin:
+
+1. recognizes legacy V1, current V2, and later replay requests;
+2. removes compact protocol artifacts and asks the configured summary model to summarize the current conversation window through CPA's `host.model.execute` path;
+3. uses Codex's current local-compaction prompt by default, with an optional `compact_prompt` override;
+4. returns a canonical `compaction` item marked with `cpa_compact_*` — V1 returns a compacted output window, while V2 returns the required SSE events;
+5. converts only its own marked plaintext state back into an ordinary user summary on continuation.
+
+For a `passthrough` rule, the plugin declines the request and CPA keeps its existing native route unchanged.
+
+## Scope and limitations
+
+- This is a bridge for **Codex Responses remote compaction**. It is not a server-side implementation of Codex local compact and does not handle Claude Messages compaction.
+- A bridged summary is designed to approximate Codex local-compaction continuity, but it is generated by the selected summary model and is not provider-native compact state.
+- Native compaction items are treated as opaque and provider/model-lineage-specific. The plugin does not decrypt, translate, or migrate them.
+- If a session already contains foreign native compact state, keep it on the originating compatible model or start a new session with a text handoff. Switching that session to a bridged third-party model fails closed by design.
+- The `encrypted_content` field of a bridged item contains the **plaintext** summary. The `cpa_compact_*` ID is a compatibility marker, not encryption, authentication, or integrity protection.
 
 ## Use cases
 
-### Official GPT main agent, third-party sub-agents
+### Native GPT main session with third-party sub-agents
 
-Run Codex with an official GPT model as the main agent and third-party models as sub-agents. The official model keeps provider-native remote compaction and its higher-quality summaries. When a third-party sub-agent needs compaction, the plugin converts that turn into an ordinary summary call and returns a Codex-compatible compact result.
+Keep the GPT session on native passthrough while independent third-party sub-agent sessions use bridge rules. Both model classes can share one CPA endpoint without sharing opaque compact state.
 
-### Freely mixing official and third-party models
+### Mixed model catalog behind one Codex provider
 
-The main agent and concurrent sub-agents can select official or third-party models at any time. Official models pass through unchanged and keep remote compaction; third-party models are bridged. Both can run in the same Codex setup without changing provider configuration between turns or sending an unsupported compact format upstream.
-
-## How it works
-
-Codex remote compaction has two protocol shapes, plus a replay step. The bridge handles each:
-
-- **V1** — intercepts the non-streaming `POST /v1/responses/compact` endpoint, summarizes the context through an ordinary model request, and returns retained user/developer history plus a marked `compaction` item.
-- **V2** — detects a streaming `/v1/responses` request whose final input is a `compaction_trigger`, summarizes through an ordinary model request, and returns the `compaction` SSE item plus `response.completed` that Codex expects.
-- **Replay** — on later ordinary turns, converts the plugin's own `cpa_compact_*` plaintext state back into a normal user summary so context survives Responses→Chat conversion.
-- **Passthrough** — models you configure as native-compact-capable are forwarded unchanged.
-
-The `encrypted_content` field of a bridged V1 or V2 compaction item holds the **plaintext** summary. It is a compatibility marker (the `cpa_compact_*` ID), not encryption and not a trust, integrity, or confidentiality boundary. See [Security](#security).
+Expose native-capable and third-party models side by side. Each new session follows the rule for its requested model, so users do not need to rename the provider or toggle global compact behavior.
 
 ## Status
 
-- **Confirmed:** CLIProxyAPI **v7.2.120**, **linux/amd64** — build and integration CI.
-- **Compatibility regression tested:** exact CLIProxyAPI **v7.2.125** source in the local real-CPA integration harness; this is not a published linux/amd64 artifact claim.
-- **Prebuilt binaries** for linux/amd64 will be published on [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases). See [Installation](#installation).
-- **Experimental / unverified:** other CLIProxyAPI versions, macOS/Windows builds, and other CPU architectures. Build the library yourself for your platform; behavior is not guaranteed there.
-
-## Disclaimers
-
-- ⚠️ **Not affiliated with OpenAI or CLIProxyAPI.** This is independent community software. It is not endorsed by or certified by OpenAI or CLIProxyAPI's maintainers. "Codex" and "OpenAI" are trademarks of their respective owners.
-- The plugin does not vet or authenticate upstream providers. **You are responsible** for ensuring your use of any provider, account, API key, rate limit, and quota complies with the applicable terms of service. This project provides no guarantee of legal, regulatory, or contractual compliance.
-- When a model matches a `bridge` rule, the configured summary provider receives a **compressed/summarized version of your conversation context**.
-- In V1 and V2 the plaintext summary is placed in `encrypted_content`; it is not encrypted (see above).
+- `main` CI runs plugin unit tests and `go vet`, builds a linux/amd64 c-shared candidate, and runs the real CPA integration suite against exact CLIProxyAPI **v7.2.125** source.
+- The plugin module currently uses the CLIProxyAPI **v7.2.120** SDK; compatibility with **v7.2.125** is covered by the integration gate.
+- The integration suite covers V1, V2 HTTP/SSE, HTTP and streaming replay, WebSocket V2 continuation, fail-closed cases, and passthrough isolation.
+- Real-provider test-cpa evaluations, including the native V2 / bridge V2 / local comparison, are recorded in [the test matrix](docs/research/test-cpa-real-session-matrix-2026-08-13.md).
+- There is no stable GitHub Release yet. CI artifacts are short-lived test candidates, not published releases.
+- macOS, Windows, non-amd64 builds, and other CPA versions remain unverified.
 
 ## Installation
 
-**Linux amd64 (recommended):** build from source or download a prebuilt binary from [GitHub Releases](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases) when available.
+There is no stable prebuilt release yet. Build the plugin from source:
 
 ```bash
 cd plugin
@@ -70,15 +102,7 @@ Place the artifact in CPA's plugin discovery directory:
 <plugin-dir>/linux/amd64/cpa-codex-compact-bridge.so
 ```
 
-**Other platforms (experimental):** use `.dylib` on macOS or `.dll` on Windows and replace the directory with `<GOOS>/<GOARCH>`.
-
-The dynamic library basename (without extension) is the plugin ID. The plugin is compiled against the CLIProxyAPI `v7.2.120` SDK.
-
-## CPA Plugin Store
-
-This plugin is **not yet listed** in the [CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store). You cannot currently install it via CPA's built-in plugin store command. Use the manual installation steps above.
-
-A prebuilt binary release and store submission are planned; see [CONTRIBUTING.md](CONTRIBUTING.md#maintainer-releases) for the maintainer release workflow.
+Use `.dylib` on macOS or `.dll` on Windows and replace the directory with the matching `<GOOS>/<GOARCH>`. These platforms are experimental until release CI covers them.
 
 ## Configuration
 
@@ -90,33 +114,37 @@ plugins:
     cpa-codex-compact-bridge:
       enabled: true
       priority: 100
-      # Optional. Defaults to Codex's built-in local compact prompt.
+      # Optional. Defaults to Codex's current local-compaction prompt.
       compact_prompt: "Summarize for the next coding agent."
       rules:
-        # Third-party models: bridge
-        - match: "glm-*"
+        # Explicit third-party bridge rule.
+        - match: "deepseek-*"
           action: bridge
-          summary_model: "glm-5.2"
-        # Native remote-compact models: keep CPA's original path
+          summary_model: "deepseek-chat"
+        # Native remote compact remains untouched.
         - match: "gpt-*-codex*"
           action: passthrough
+      # Conservative default: do not bridge unknown models.
       on_no_match: passthrough
 ```
 
-Rules are evaluated in order against the original client-requested model using **case-sensitive** glob matching; the first match wins. `bridge` makes the plugin own that model's compact turns and enables replay normalization; `passthrough` leaves every request on CPA's built-in route. Whether a provider has native compact capability is expressed by you through `bridge` / `passthrough` rules — the plugin does not guess upstream capability.
+Rules use case-sensitive glob matching against the original client-requested model. `summary_model` defaults to the request model. `compact_prompt` defaults to the prompt embedded by this plugin; set it explicitly when the Codex client uses a custom compact prompt because remote compact requests do not transmit that client-side override.
 
-`summary_model` is optional; when absent, the request model is used for the ordinary summary request. `compact_prompt` is also optional; when absent or blank, the plugin uses the current Codex local-compaction default prompt. Set it only when the client uses a custom Codex `compact_prompt` and you want bridged compaction to use the same instruction. The remote compact request does not carry the client's configured prompt, so the plugin cannot discover that override automatically. `on_no_match` accepts only `passthrough`.
+CLIProxyAPI **Home mode disables plugin executor routing**, so it cannot be used with a `bridge` rule.
 
-CLIProxyAPI **Home mode disables plugin executor routing**, so it cannot be used together with a `bridge` rule.
+See [Configuration](docs/configuration.md) for the full contract.
 
 ## Security
 
-Read [SECURITY.md](SECURITY.md). In short:
+The selected summary provider receives the conversation window required to generate the summary. Do not enable a `bridge` rule for data that provider is not allowed to process.
 
-- `encrypted_content` is plaintext, not a security boundary.
-- The summary provider receives your compressed context.
-- The plugin fails closed (`compact_bridge_failed`) instead of forwarding compaction protocol items to an unsupported upstream.
-- Report vulnerabilities privately, not via public issues.
+The plugin fails closed with `compact_bridge_failed` instead of forwarding an unsupported compact request or unknown native compact state. Read [SECURITY.md](SECURITY.md) before deployment and report vulnerabilities through a private GitHub security advisory.
+
+## CPA Plugin Store
+
+This plugin is **not yet listed** in the [official CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), so CPA's built-in store cannot install it today.
+
+The repository already contains a store-compatible linux/amd64 release workflow. Publication still requires a new versioned GitHub Release with the expected zip and `checksums.txt`, followed by a `registry.json` pull request. See the current [store readiness report](docs/research/cpa-plugin-store-publication.md).
 
 ## Verification
 
@@ -125,9 +153,7 @@ Read [SECURITY.md](SECURITY.md). In short:
 (cd integration && CPA_SOURCE_DIR=/path/to/CLIProxyAPI go test ./... -count=1)
 ```
 
-The integration suite builds a real CPA binary and the c-shared plugin and covers V1, V2 HTTP/SSE, HTTP replay, streaming replay, and a WebSocket V2 compact turn with `previous_response_id` and its continuation.
-It requires a local checkout of CLIProxyAPI at `CPA_SOURCE_DIR`; CI supplies the
-pinned checkout automatically.
+The integration suite builds a real CPA binary and the c-shared plugin. CI provides the pinned CPA checkout automatically.
 
 ## Documentation
 
@@ -135,11 +161,14 @@ pinned checkout automatically.
 - [Configuration](docs/configuration.md)
 - [Domain glossary](CONTEXT.md)
 - [Architecture decision: plaintext bridged compaction items](docs/adr/0001-use-plaintext-v2-compaction-items.md)
+- [CPA Plugin Store readiness](docs/research/cpa-plugin-store-publication.md)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## License
+## License and disclaimer
 
 MIT — see [LICENSE](LICENSE). Third-party notices are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+
+This is independent community software. It is not affiliated with, endorsed by, or certified by OpenAI or CLIProxyAPI. You are responsible for ensuring that your provider, account, API key, quota, and data use comply with the applicable terms.

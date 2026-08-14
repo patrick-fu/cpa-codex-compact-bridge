@@ -2,10 +2,11 @@
 
 ## Supported versions
 
-Security fixes target the current `v0.1.0` source baseline built and tested against
-CLIProxyAPI **v7.2.120** on **linux/amd64**. Other CLIProxyAPI versions,
-operating systems, and CPU architectures are not verified and may receive no
-fixes.
+Until the first stable GitHub Release, security fixes target the current `main`
+branch. CI builds linux/amd64 against the CLIProxyAPI **v7.2.120** SDK and runs
+the real integration suite against exact CLIProxyAPI **v7.2.125** source. Other
+CLIProxyAPI versions, operating systems, and CPU architectures are not verified
+and may receive no fixes.
 
 ## Reporting a vulnerability
 
@@ -35,13 +36,14 @@ integrity, or authenticity, and it is **not** provider-verifiable native
 compaction state. Treat its contents as visible to anyone who can read the
 persisted Codex session.
 
-### Your provider receives compressed context
+### Your summary provider receives the conversation window
 
-When a model matches a `bridge` rule, the plugin summarizes your conversation
-and sends that summary to the configured summary model (or the bridged model
-itself) through CLIProxyAPI. That third-party provider therefore receives a
-compressed version of your conversation context. Make sure that is acceptable
-under your provider's terms before enabling a `bridge` rule.
+When a model matches a `bridge` rule, the plugin sends the conversation window
+needed for compaction to the configured summary model (or the bridged model
+itself) through CLIProxyAPI. The resulting summary is returned to Codex, but
+the summary provider necessarily sees the source material it summarizes. Make
+sure that is acceptable under your provider's terms before enabling a `bridge`
+rule.
 
 ### You are responsible for upstream compliance
 

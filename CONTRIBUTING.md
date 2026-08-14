@@ -8,8 +8,9 @@ small, focused plugin, so these guidelines are intentionally short.
 - Go 1.26.5 (match `plugin/go.mod`).
 - CGO and a C compiler (`gcc` on Linux, `clang` on macOS) to build the c-shared
   library.
-- CLIProxyAPI v7.2.120 available for the integration suite (the plugin is built
-  against its v7.2.120 SDK).
+- CLIProxyAPI v7.2.125 available for the integration suite. The plugin module
+  imports the v7.2.120 SDK, while CI verifies runtime integration against the
+  exact v7.2.125 source.
 
 ## Build
 
