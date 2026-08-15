@@ -1,6 +1,6 @@
 # CPA Plugin Store publication readiness
 
-**Checked:** 2026-08-14
+**Checked:** 2026-08-15
 
 **Project:** [`patrick-fu/cpa-codex-compact-bridge`](https://github.com/patrick-fu/cpa-codex-compact-bridge)
 
@@ -59,7 +59,7 @@ The registry itself requires `id`, `name`, `description`, `author`, and `reposit
 | Runtime registration metadata | Ready | Name, version, author, repository, ABI schema, and declared capabilities are returned by `plugin.register`. |
 | Store-compatible packaging workflow | Ready | [`.github/workflows/release.yml`](../../.github/workflows/release.yml) produces `cpa-codex-compact-bridge_<version>_linux_amd64.zip`, one root-level `.so`, and `checksums.txt`. |
 | Test gate for release | Ready | Unit test, vet, and real CPA integration are part of the tag workflow; CPA is pinned to v7.2.125. |
-| Version source | **Needs release preparation** | `pluginVersion` is still `0.1.0`; the tested CI candidates use `0.1.2-rc.<sha>`. Choose the next stable version and update `pluginVersion` before tagging. |
+| Version source | Ready for prep CI | `pluginVersion` is `0.1.2`, matching the tested `0.1.2-rc.<sha>` candidate line. The release workflow independently verifies source metadata against the tag. |
 | GitHub Release assets | **Missing** | No stable Release exists. This is the store submission blocker. |
 | Registry entry | **Missing by design** | Submit only after the release can be installed and checksum-verified. |
 | Logo | Optional | No logo is required. Add one only if useful; do not block publication on it. |
@@ -96,13 +96,12 @@ Add this only after the stable release exists:
 
 ## Minimal publication sequence
 
-1. Choose the first stable release from current `main`. Given the existing `v0.1.0` tag and tested `0.1.2-rc.*` candidates, `v0.1.2` is the least surprising option; this remains a maintainer version decision.
-2. Update `pluginVersion` to the chosen version and merge through the required build/integration gate.
-3. Tag that exact `main` commit once. Do not move or reuse `v0.1.0`.
-4. Let the Release workflow publish the linux/amd64 zip and `checksums.txt`.
-5. Independently verify the archive name, checksum, root layout, embedded version, and installation through a non-production CPA instance.
-6. Open a store PR changing only `registry.json`, using the proposed entry and linking the verified Release.
-7. In the PR body, explicitly distinguish per-model passthrough + V1/V2 + replay from the existing V2-focused store plugin.
+1. Merge the `pluginVersion = "0.1.2"` preparation through the build/integration gate.
+2. Tag that exact `main` commit once as `v0.1.2`. Do not move or reuse `v0.1.0`.
+3. Let the Release workflow publish the linux/amd64 zip and `checksums.txt`.
+4. Independently verify the archive name, checksum, root layout, embedded version, and installation through a non-production CPA instance.
+5. Open a store PR changing only `registry.json`, using the proposed entry and linking the verified Release.
+6. In the PR body, explicitly distinguish per-model passthrough + V1/V2 + replay from the existing V2-focused store plugin.
 
 No Release, store PR, store registry edit, deployment, or GitHub protection change was performed during this audit.
 

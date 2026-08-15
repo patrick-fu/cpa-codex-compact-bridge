@@ -58,7 +58,7 @@ const (
 
 // pluginVersion can be overridden in release builds with:
 // -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=<version>"
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.1.2"
 
 // configHolder holds the active parsed configuration. It is replaced atomically
 // on plugin.register / plugin.reconfigure.

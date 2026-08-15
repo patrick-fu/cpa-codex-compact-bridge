@@ -23,7 +23,7 @@ body:
     id: cpa
     attributes:
       label: CLIProxyAPI version (if relevant)
-      placeholder: v7.2.120
+      placeholder: v7.2.125
   - type: input
     id: platform
     attributes:
