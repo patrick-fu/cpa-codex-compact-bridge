@@ -84,22 +84,33 @@ GPT 会话保持 native passthrough，独立的第三方 sub-agent 会话命中 
 - 插件 module 当前依赖 CLIProxyAPI **v7.2.120** SDK；与 **v7.2.125** 的兼容性由集成 gate 覆盖。
 - 集成测试覆盖 V1、V2 HTTP/SSE、HTTP 与流式 replay、WebSocket V2 continuation、fail-closed 与 passthrough 隔离。
 - test-cpa 真实 Provider 评测（包括原生 V2 / bridge V2 / local 对比）记录见[测试矩阵](docs/research/test-cpa-real-session-matrix-2026-08-13.md)。
-- 当前没有稳定 GitHub Release；CI artifact 是短期测试候选，不是正式发布产物。
+- 稳定版本：[v0.1.2](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.2)，发布 linux/amd64 产物及 sha256sum 兼容 checksum 文件。
 - macOS、Windows、非 amd64 架构及其他 CPA 版本尚未验证。
 
 ## 安装
 
-当前没有稳定预编译 Release，请从源码构建：
+下载并校验 linux/amd64 Release：
+
+```bash
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.2/cpa-codex-compact-bridge_0.1.2_linux_amd64.zip
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.2/checksums.txt
+sha256sum -c checksums.txt
+unzip cpa-codex-compact-bridge_0.1.2_linux_amd64.zip
+```
+
+使用版本化文件名安装解压出的动态库：
+
+```text
+<plugin-dir>/linux/amd64/cpa-codex-compact-bridge-v0.1.2.so
+```
+
+reload 或重启 CPA 后，通过 `GET /v0/management/plugins` 确认版本为 `0.1.2`、`registered: true`、`effective_enabled: true`。仅发现新文件时，CPA 可能先更新所选路径，但尚未替换已加载实例。
+
+如需从源码构建：
 
 ```bash
 cd plugin
 go build -buildmode=c-shared -o cpa-codex-compact-bridge.so .
-```
-
-把产物放到 CPA 插件发现目录：
-
-```text
-<plugin-dir>/linux/amd64/cpa-codex-compact-bridge.so
 ```
 
 macOS 使用 `.dylib`，Windows 使用 `.dll`，目录替换为对应 `<GOOS>/<GOARCH>`。Release CI 覆盖这些平台前均视为实验性。
@@ -144,7 +155,7 @@ CLIProxyAPI **Home 模式会禁用 plugin executor routing**，因此不能与 `
 
 本插件**尚未列入**[官方 CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)，因此目前不能通过 CPA 内置商店安装。
 
-仓库已准备符合商店格式的 linux/amd64 Release workflow。正式上架仍需创建新的版本化 GitHub Release，提供规定命名的 zip 与 `checksums.txt`，再提交修改 `registry.json` 的 PR。当前清单见[商店准入报告](docs/research/cpa-plugin-store-publication.md)。
+符合商店格式的 v0.1.2 Release 与 test-cpa 验收均已完成。剩余上架动作只有提交修改 `registry.json` 的 PR。当前清单见[商店准入报告](docs/research/cpa-plugin-store-publication.md)。
 
 ## 验证
 

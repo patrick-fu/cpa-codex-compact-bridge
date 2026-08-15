@@ -150,3 +150,36 @@ Native V2 state is opaque and cannot be directly scored, so the cross-route comp
 All nine compactions and all 27 continuation turns completed successfully. Native V2 was materially stronger on this sample: two runs retained the first GLM follow-up `67×71=4757` and produced the correct new acceptance decision. Both plaintext-summary paths consistently omitted that first-round calculation. Bridge V2 additionally produced two continuations that incorrectly required DeepSeek to be retested, despite the summary retaining its success token.
 
 This comparison measures the real product paths, not a pure compaction-algorithm effect: native V2 used `gpt-5.4`, while Bridge/local used DeepSeek. The earlier direct summary-body evaluation remains the Bridge-specific result—Bridge V2 median 85 versus local 83.5—because it removes downstream answer variance. The new continuation result shows that native opaque state plus GPT gives substantially better practical recall and inference than either plaintext-summary path for this history; it does not isolate how much of the gain comes from native compaction versus the model.
+
+## Stable v0.1.2 release gate (2026-08-15)
+
+Annotated tag `v0.1.2` points to `6b9c3ce92fdd0280486184add37ecd6e5c4192c7`. The [Release workflow](https://github.com/patrick-fu/cpa-codex-compact-bridge/actions/runs/31878767010) passed source-version validation, unit tests, vet, linux/amd64 c-shared build, packaging, and the CPA v7.2.125 integration gate.
+
+Independent Release verification:
+
+- archive: `cpa-codex-compact-bridge_0.1.2_linux_amd64.zip`;
+- archive SHA-256: `6052bfa15e10323a742ab78318b8035878a57a85d4aa3c831b5d391a39a2f8e5`;
+- zip root: exactly `cpa-codex-compact-bridge.so`;
+- extracted library SHA-256: `a2821f035f9b2dbc3f747cecd9a47c454e836559111682909673f75b688d8321`;
+- binary: ELF 64-bit x86-64 c-shared with embedded version `0.1.2`.
+
+The exact Release library was installed in isolated test-cpa as `/CLIProxyAPI/plugins/linux/amd64/cpa-codex-compact-bridge-v0.1.2.so`. The prior `0.1.2-rc.d12112f` library was preserved under a non-plugin backup extension with its original SHA-256 `2541541e162dead650d14ddf1170775db634d143fff56d4be9e8645873b118f2`. Hot discovery selected the new path but retained old registration metadata, so the CPA service alone was restarted. PostgreSQL and production were not touched.
+
+Post-restart management evidence:
+
+- CPA v7.2.125 remained running;
+- Bridge `registered=true`, `effective_enabled=true`, metadata version `0.1.2`;
+- Bridge configuration response SHA-256 stayed `25193457ab33b8b69a335984d5185f97736b509713e8ac3edc132996c025c297`;
+- token tracker remained registered and none of its files or hashes changed.
+
+Five minimal real-provider requests passed:
+
+| Gate | Result |
+| --- | --- |
+| DeepSeek V1 compact | HTTP 200, returned `cpa_compact_*`, summary preserved the release marker |
+| DeepSeek V1 continuation | HTTP 200, model recalled the exact marker |
+| DeepSeek V2 compact | HTTP 200, returned `cpa_compact_*`, summary preserved the release marker |
+| DeepSeek V2 continuation | HTTP 200, model recalled the exact marker |
+| GPT-5.4 native V2 passthrough | HTTP 200, terminal `response.completed`, returned native `cmp_*`, `bridge_owned=false` |
+
+The container received temporary `curl`/`jq` validation utilities; these are ephemeral container-layer changes and did not alter the image definition or persistent volumes. No provider price was exposed, so monetary cost is not asserted.

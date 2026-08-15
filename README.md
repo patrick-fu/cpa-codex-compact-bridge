@@ -84,22 +84,33 @@ Expose native-capable and third-party models side by side. Each new session foll
 - The plugin module currently uses the CLIProxyAPI **v7.2.120** SDK; compatibility with **v7.2.125** is covered by the integration gate.
 - The integration suite covers V1, V2 HTTP/SSE, HTTP and streaming replay, WebSocket V2 continuation, fail-closed cases, and passthrough isolation.
 - Real-provider test-cpa evaluations, including the native V2 / bridge V2 / local comparison, are recorded in [the test matrix](docs/research/test-cpa-real-session-matrix-2026-08-13.md).
-- There is no stable GitHub Release yet. CI artifacts are short-lived test candidates, not published releases.
+- Stable release: [v0.1.2](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.2), published for linux/amd64 with a sha256sum-compatible checksum file.
 - macOS, Windows, non-amd64 builds, and other CPA versions remain unverified.
 
 ## Installation
 
-There is no stable prebuilt release yet. Build the plugin from source:
+Download the linux/amd64 release and verify it before extraction:
+
+```bash
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.2/cpa-codex-compact-bridge_0.1.2_linux_amd64.zip
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.2/checksums.txt
+sha256sum -c checksums.txt
+unzip cpa-codex-compact-bridge_0.1.2_linux_amd64.zip
+```
+
+Install the extracted library under a versioned filename:
+
+```text
+<plugin-dir>/linux/amd64/cpa-codex-compact-bridge-v0.1.2.so
+```
+
+Reload or restart CPA, then confirm `GET /v0/management/plugins` reports version `0.1.2`, `registered: true`, and `effective_enabled: true`. File discovery alone may select the new path before the already loaded plugin instance is replaced.
+
+To build from source instead:
 
 ```bash
 cd plugin
 go build -buildmode=c-shared -o cpa-codex-compact-bridge.so .
-```
-
-Place the artifact in CPA's plugin discovery directory:
-
-```text
-<plugin-dir>/linux/amd64/cpa-codex-compact-bridge.so
 ```
 
 Use `.dylib` on macOS or `.dll` on Windows and replace the directory with the matching `<GOOS>/<GOARCH>`. These platforms are experimental until release CI covers them.
@@ -144,7 +155,7 @@ The plugin fails closed with `compact_bridge_failed` instead of forwarding an un
 
 This plugin is **not yet listed** in the [official CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), so CPA's built-in store cannot install it today.
 
-The repository already contains a store-compatible linux/amd64 release workflow. Publication still requires a new versioned GitHub Release with the expected zip and `checksums.txt`, followed by a `registry.json` pull request. See the current [store readiness report](docs/research/cpa-plugin-store-publication.md).
+The store-compatible v0.1.2 Release and its test-cpa validation are complete. The remaining publication step is a `registry.json` pull request. See the current [store readiness report](docs/research/cpa-plugin-store-publication.md).
 
 ## Verification
 

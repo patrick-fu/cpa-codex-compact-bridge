@@ -10,9 +10,9 @@
 
 ## Current answer
 
-The repository is public and already has the normal open-source project files and a working build/integration CI. It is **not ready to submit to the CPA Plugin Store yet** because it has no stable GitHub Release containing the installable zip and `checksums.txt`.
+The repository is public, the linux/amd64 [v0.1.2 Release](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.2) is published and independently verified, and the exact Release library has passed a real-provider test-cpa gate. It is ready for a CPA Plugin Store `registry.json` submission.
 
-The release workflow is present and uses the correct store asset layout for linux/amd64. After publishing and verifying a new release, the remaining store action is a small pull request that adds one entry to `registry.json`.
+The remaining store action is a small pull request that adds one entry to `registry.json`.
 
 ## Open-source repository status
 
@@ -25,7 +25,7 @@ The release workflow is present and uses the correct store asset layout for linu
 | English / Chinese overview | Ready | [`README.md`](../../README.md) and [`README.zh-CN.md`](../../README.zh-CN.md) share the same problem-goal-solution structure. |
 | Build and integration CI | Ready | [`Build Linux Plugin`](https://github.com/patrick-fu/cpa-codex-compact-bridge/actions/workflows/build-linux-plugin.yml) tests, vets, builds linux/amd64, and integrates with pinned CPA v7.2.125. |
 | Required CI enforcement | Optional gap | CI runs on PRs and `main` pushes, but GitHub branch protection currently has no required status check. Require `Test and build linux/amd64 plugin` before accepting external PRs. |
-| Stable release | **Blocked** | GitHub has a `v0.1.0` tag but no GitHub Release or assets. Do not retarget the old tag. |
+| Stable release | Ready | [v0.1.2](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.2) contains the required linux/amd64 zip and `checksums.txt`. |
 | Multi-platform release | Limited by choice | Current release workflow publishes only linux/amd64. The store permits this, but other platforms will not be installable. |
 
 ## What the official store requires
@@ -60,8 +60,8 @@ The registry itself requires `id`, `name`, `description`, `author`, and `reposit
 | Store-compatible packaging workflow | Ready | [`.github/workflows/release.yml`](../../.github/workflows/release.yml) produces `cpa-codex-compact-bridge_<version>_linux_amd64.zip`, one root-level `.so`, and `checksums.txt`. |
 | Test gate for release | Ready | Unit test, vet, and real CPA integration are part of the tag workflow; CPA is pinned to v7.2.125. |
 | Version source | Ready for prep CI | `pluginVersion` is `0.1.2`, matching the tested `0.1.2-rc.<sha>` candidate line. The release workflow independently verifies source metadata against the tag. |
-| GitHub Release assets | **Missing** | No stable Release exists. This is the store submission blocker. |
-| Registry entry | **Missing by design** | Submit only after the release can be installed and checksum-verified. |
+| GitHub Release assets | Ready | Zip SHA-256 `6052bfa15e10323a742ab78318b8035878a57a85d4aa3c831b5d391a39a2f8e5`; root library SHA-256 `a2821f035f9b2dbc3f747cecd9a47c454e836559111682909673f75b688d8321`. |
+| Registry entry | Ready to submit | No existing ID conflict in the 2026-08-15 official registry snapshot. |
 | Logo | Optional | No logo is required. Add one only if useful; do not block publication on it. |
 
 ## Positioning next to the existing Codex Local Compact plugin
@@ -77,7 +77,7 @@ Do not claim that native compact state is portable across providers or that this
 
 ## Proposed registry entry
 
-Add this only after the stable release exists:
+Proposed submission:
 
 ```json
 {
@@ -96,14 +96,11 @@ Add this only after the stable release exists:
 
 ## Minimal publication sequence
 
-1. Merge the `pluginVersion = "0.1.2"` preparation through the build/integration gate.
-2. Tag that exact `main` commit once as `v0.1.2`. Do not move or reuse `v0.1.0`.
-3. Let the Release workflow publish the linux/amd64 zip and `checksums.txt`.
-4. Independently verify the archive name, checksum, root layout, embedded version, and installation through a non-production CPA instance.
-5. Open a store PR changing only `registry.json`, using the proposed entry and linking the verified Release.
-6. In the PR body, explicitly distinguish per-model passthrough + V1/V2 + replay from the existing V2-focused store plugin.
+1. Open a store PR changing only `registry.json`, using the proposed entry and linking the verified v0.1.2 Release.
+2. In the PR body, explicitly distinguish per-model passthrough + V1/V2 + replay from the existing V2-focused store plugin.
+3. After merge, install once through the official store source in test-cpa and confirm version `0.1.2`.
 
-No Release, store PR, store registry edit, deployment, or GitHub protection change was performed during this audit.
+Release v0.1.2 was published and installed only in test-cpa. No production service or GitHub protection setting was changed.
 
 ## Primary sources
 

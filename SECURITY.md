@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Until the first stable GitHub Release, security fixes target the current `main`
-branch. CI builds linux/amd64 against the CLIProxyAPI **v7.2.120** SDK and runs
-the real integration suite against exact CLIProxyAPI **v7.2.125** source. Other
+Security fixes target the current stable **v0.1.2** release. CI builds
+linux/amd64 against the CLIProxyAPI **v7.2.120** SDK and runs the real
+integration suite against exact CLIProxyAPI **v7.2.125** source. Other
 CLIProxyAPI versions, operating systems, and CPU architectures are not verified
 and may receive no fixes.
 
