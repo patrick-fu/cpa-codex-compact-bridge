@@ -1,0 +1,21 @@
+{
+  "model": "native-test",
+  "stream": false,
+  "input": [
+    {
+      "type": "compaction",
+      "id": "cpa_compact_fixture",
+      "encrypted_content": "previous compacted summary"
+    },
+    {
+      "type": "reasoning",
+      "id": "rs_fixture",
+      "encrypted_content": "opaque reasoning state"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [{"type": "input_text", "text": "continue after switching to the native target"}]
+    }
+  ]
+}

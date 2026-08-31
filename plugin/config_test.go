@@ -21,7 +21,7 @@ rules:
   - match: "glm-*"
     action: bridge
     summary_model: "glm-5.2"
-  - match: "gpt-*-codex*"
+  - match: "gpt-*"
     action: passthrough
 on_no_match: passthrough
 `)
@@ -71,7 +71,7 @@ func TestDecideRouteFirstMatchWins(t *testing.T) {
 	cfg := Config{
 		Rules: []Rule{
 			{Match: "glm-*", Action: ActionBridge, SummaryModel: "glm-5.2"},
-			{Match: "gpt-*-codex*", Action: ActionPassthrough},
+			{Match: "gpt-*", Action: ActionPassthrough},
 		},
 		OnNoMatch: ActionPassthrough,
 	}
@@ -125,8 +125,8 @@ func TestGlobMatch(t *testing.T) {
 	}{
 		{"glm-*", "glm-4.7", true},
 		{"glm-*", "glm-5.2", true},
-		{"gpt-*-codex*", "gpt-5.5-codex", true},
-		{"gpt-*-codex*", "gpt-5.5", false},
+		{"gpt-*", "gpt-5.5-codex", true},
+		{"gpt-*", "gpt-5.5", true},
 		{"*", "anything", true},
 		{"exact", "exact", true},
 		{"exact", "other", false},

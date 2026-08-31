@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes target the current stable **v0.1.2** release. CI builds
+Security fixes target the current stable **v0.1.3** release. CI builds
 linux/amd64 against the CLIProxyAPI **v7.2.120** SDK and runs the real
 integration suite against exact CLIProxyAPI **v7.2.125** source. Other
 CLIProxyAPI versions, operating systems, and CPU architectures are not verified
@@ -54,10 +54,18 @@ guarantee of legal, regulatory, or contractual compliance.
 
 ### Fail-closed behavior
 
-If summary generation fails or produces no usable text, the plugin fails
-closed. It returns a stable error (`compact_bridge_failed`) instead of
-forwarding Codex-specific compaction protocol items to an upstream that cannot
-handle them, which avoids sending malformed compact requests to a provider.
+Deterministic compaction-state errors fail with HTTP 400 and the stable,
+non-retryable code `invalid_compaction_state` before any upstream call. This
+includes opaque state on a `bridge` or unmatched target, mixed native/bridge
+state, and blank plugin state. Runtime summary, network, and upstream failures
+keep the retryable code `compact_bridge_failed`; a blank generated summary is
+never persisted.
+
+An explicit `passthrough` rule is an administrator declaration that its target
+can continue opaque native compaction state. The plugin cannot inspect that
+state or verify which provider created it. Keep every passthrough pattern within
+a compatible provider/model lineage; a bad explicit rule can still forward
+opaque state to an incompatible upstream.
 
 ### No affiliation
 

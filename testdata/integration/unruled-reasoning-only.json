@@ -1,0 +1,16 @@
+{
+  "model": "native-test",
+  "stream": false,
+  "input": [
+    {
+      "type": "reasoning",
+      "id": "rs_fixture",
+      "encrypted_content": "opaque reasoning state"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [{"type": "input_text", "text": "continue after a reasoning-only turn"}]
+    }
+  ]
+}

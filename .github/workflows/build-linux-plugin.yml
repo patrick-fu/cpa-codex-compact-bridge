@@ -47,7 +47,7 @@ jobs:
       - name: Build c-shared ABI library
         working-directory: plugin
         run: |
-          VERSION="0.1.2-rc.${GITHUB_SHA::7}"
+          VERSION="0.1.3-rc.${GITHUB_SHA::7}"
           mkdir -p ../dist/linux-amd64
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -buildmode=c-shared \

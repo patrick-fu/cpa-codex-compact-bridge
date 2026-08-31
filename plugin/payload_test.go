@@ -376,6 +376,54 @@ func TestV2SSEEventsNoPartial(t *testing.T) {
 	}
 }
 
+// TestExtractSummaryTextRejectsBlankSummary is the generation half of the
+// corrupt-state rule: a blank summary must never become a compaction item, and
+// it stays a retryable runtime failure instead of a client error.
+func TestExtractSummaryTextRejectsBlankSummary(t *testing.T) {
+	for name, body := range map[string][]byte{
+		"Responses whitespace output": []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  \n "}]}]}`),
+		"Chat whitespace content":     []byte(`{"choices":[{"message":{"content":" \t "}}]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			text, err := extractSummaryText(body)
+			pluginErrValue := mustPluginErr(t, err, errCodeCompactBridgeFailed)
+			if text != "" || asInvalidCompactionState(pluginErrValue) != nil {
+				t.Fatalf("blank summary = %q err = %+v", text, pluginErrValue)
+			}
+		})
+	}
+	usable := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{"Responses", []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  kept summary  "}]}]}`), "  kept summary  "},
+		{"Chat", []byte(`{"choices":[{"message":{"content":"chat summary"}}]}`), "chat summary"},
+	}
+	for _, tt := range usable {
+		t.Run(tt.name, func(t *testing.T) {
+			text, err := extractSummaryText(tt.body)
+			if err != nil || text != tt.want {
+				t.Fatalf("usable summary rejected or altered: text = %q err = %v", text, err)
+			}
+		})
+	}
+}
+
+// TestV2CompactionItemJSONRejectsBlankSummary keeps the item builder itself
+// unable to persist unreadable state.
+func TestV2CompactionItemJSONRejectsBlankSummary(t *testing.T) {
+	for _, summary := range []string{"", "   ", "\n\t "} {
+		if item, err := v2CompactionItemJSON("cpa_compact_x", summary); err == nil || item != nil {
+			t.Fatalf("blank summary %q produced an item: %s %v", summary, item, err)
+		}
+	}
+	item, err := v2CompactionItemJSON("cpa_compact_x", "real summary")
+	if err != nil || !strings.Contains(string(item), "real summary") {
+		t.Fatalf("usable summary rejected: %s %v", item, err)
+	}
+}
+
 func TestExtractAssistantTextResponses(t *testing.T) {
 	body := []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}]}`)
 	text, err := extractAssistantText(body)

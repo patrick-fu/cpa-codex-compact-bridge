@@ -1,0 +1,19 @@
+{
+  "model": "bridge-test",
+  "stream": true,
+  "input": [
+    {
+      "type": "compaction",
+      "id": "other_provider_compact_xyz",
+      "encrypted_content": "opaque blob"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [{"type": "input_text", "text": "compact before the next turn"}]
+    },
+    {
+      "type": "compaction_trigger"
+    }
+  ]
+}
