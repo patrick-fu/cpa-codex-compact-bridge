@@ -58,14 +58,14 @@ Codex compact 请求
 4. 返回带 `cpa_compact_*` 标记的标准 `compaction` item——V1 返回 compact 后的 output window，V2 返回规定的 SSE events；
 5. continuation 时只把插件自己生成的明文状态转换为普通 user 摘要。
 
-模型命中 `passthrough` 时，插件不接管请求，CPA 原有原生路径保持不变。
+模型命中 `passthrough` 时，插件不接管 compact 轮次，CPA 原有原生路径保持不变。但插件仍会在该路径上还原自己的明文 compact 状态，因此在 bridge 模型上完成过 compact 的会话可以按 summary 级别继续在原生模型上工作。
 
 ## 范围与限制
 
 - 本项目桥接的是 **Codex Responses remote compaction**。它不是 Codex local compact 的服务端实现，也不处理 Claude Messages compaction。
 - Bridge 摘要目标是接近 Codex local compaction 的连续性，但摘要由所选模型生成，并非 Provider 原生 compact 状态。
 - 插件把原生 compaction item 视为 opaque、且与其 Provider / 模型 lineage 绑定；不会解密、转换或迁移它们。
-- 如果会话已经包含外来的原生 compact 状态，应继续使用原始兼容模型，或通过文本 handoff 新开会话。把该会话切到 bridge 第三方模型会按设计 fail closed。
+- 如果会话已经包含外来的原生 compact 状态，应继续使用原始兼容模型，或通过文本 handoff 新开会话。原生状态只会在目标模型显式命中 `passthrough` 规则时原样转发；未匹配和 `bridge` 目标都会 fail closed。同一请求混用原生状态与插件明文状态，或插件明文状态的 `encrypted_content` 缺失、为空、只有空白，也会以不可重试的客户端错误 `invalid_compaction_state` 拒绝。reasoning item 永不读取或改写。
 - Bridge item 的 `encrypted_content` 保存的是**明文**摘要。`cpa_compact_*` 只是兼容标记，不提供加密、认证或完整性保护。
 
 ## 使用场景
@@ -82,9 +82,9 @@ GPT 会话保持 native passthrough，独立的第三方 sub-agent 会话命中 
 
 - `main` CI 会运行插件单测与 `go vet`，构建 linux/amd64 c-shared 候选，并基于 CLIProxyAPI **v7.2.125** 精确源码运行真实 CPA 集成测试。
 - 插件 module 当前依赖 CLIProxyAPI **v7.2.120** SDK；与 **v7.2.125** 的兼容性由集成 gate 覆盖。
-- 集成测试覆盖 V1、V2 HTTP/SSE、HTTP 与流式 replay、WebSocket V2 continuation、fail-closed 与 passthrough 隔离。
+- 集成测试覆盖 V1、V2 HTTP/SSE、HTTP 与流式 replay、WebSocket V2 continuation、跨目标的 compact 状态矩阵、不可重试的 400 错误形状与 passthrough 隔离。
 - test-cpa 真实 Provider 评测（包括原生 V2 / bridge V2 / local 对比）记录见[测试矩阵](docs/research/test-cpa-real-session-matrix-2026-08-13.md)。
-- 稳定版本：[v0.1.2](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.2)，发布 linux/amd64 产物及 sha256sum 兼容 checksum 文件。
+- 稳定版本：[v0.1.3](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.3)，发布 linux/amd64 产物及 sha256sum 兼容 checksum 文件。
 - macOS、Windows、非 amd64 架构及其他 CPA 版本尚未验证。
 
 ## 安装
@@ -92,19 +92,19 @@ GPT 会话保持 native passthrough，独立的第三方 sub-agent 会话命中 
 下载并校验 linux/amd64 Release：
 
 ```bash
-curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.2/cpa-codex-compact-bridge_0.1.2_linux_amd64.zip
-curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.2/checksums.txt
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/checksums.txt
 sha256sum -c checksums.txt
-unzip cpa-codex-compact-bridge_0.1.2_linux_amd64.zip
+unzip cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
 ```
 
 使用版本化文件名安装解压出的动态库：
 
 ```text
-<plugin-dir>/linux/amd64/cpa-codex-compact-bridge-v0.1.2.so
+<plugin-dir>/linux/amd64/cpa-codex-compact-bridge-v0.1.3.so
 ```
 
-reload 或重启 CPA 后，通过 `GET /v0/management/plugins` 确认版本为 `0.1.2`、`registered: true`、`effective_enabled: true`。仅发现新文件时，CPA 可能先更新所选路径，但尚未替换已加载实例。
+reload 或重启 CPA 后，通过 `GET /v0/management/plugins` 确认版本为 `0.1.3`、`registered: true`、`effective_enabled: true`。仅发现新文件时，CPA 可能先更新所选路径，但尚未替换已加载实例。
 
 如需从源码构建：
 
@@ -133,7 +133,7 @@ plugins:
           action: bridge
           summary_model: "deepseek-chat"
         # 原生 remote compact 保持不变。
-        - match: "gpt-*-codex*"
+        - match: "gpt-*"
           action: passthrough
       # 保守缺省值：未知模型不自动 bridge。
       on_no_match: passthrough
@@ -149,13 +149,13 @@ CLIProxyAPI **Home 模式会禁用 plugin executor routing**，因此不能与 `
 
 所选摘要 Provider 会收到生成摘要所需的会话窗口。若该 Provider 无权处理相关数据，请勿为其启用 `bridge` 规则。
 
-插件会以 `compact_bridge_failed` fail closed，不会把不支持的 compact 请求或未知原生状态转发给第三方。部署前请阅读 [SECURITY.md](SECURITY.md)，漏洞通过 GitHub private security advisory 报告。
+插件不会把不支持的 compact 请求或未知原生状态转发给第三方：无法读取的状态是不可重试的 `invalid_compaction_state` 客户端错误，摘要请求失败仍是可重试的 `compact_bridge_failed`。部署前请阅读 [SECURITY.md](SECURITY.md)，漏洞通过 GitHub private security advisory 报告。
 
 ## CPA Plugin Store
 
 本插件**尚未列入**[官方 CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)，因此目前不能通过 CPA 内置商店安装。
 
-符合商店格式的 v0.1.2 Release 与 test-cpa 验收均已完成。剩余上架动作只有提交修改 `registry.json` 的 PR。当前清单见[商店准入报告](docs/research/cpa-plugin-store-publication.md)。
+v0.1.3 GitHub Release 与 CPA Plugin Store 上架相互独立。商店更新仍需单独提交修改 `registry.json` 的 PR；当前清单见[商店准入报告](docs/research/cpa-plugin-store-publication.md)。
 
 ## 验证
 

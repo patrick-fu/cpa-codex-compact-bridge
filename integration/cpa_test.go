@@ -38,6 +38,7 @@ type fakeUpstream struct {
 	mu           sync.Mutex
 	calls        []upstreamRequest
 	failRequests bool
+	blankSummary bool
 }
 
 func newFakeUpstream() *fakeUpstream {
@@ -51,6 +52,7 @@ func newFakeUpstream() *fakeUpstream {
 		f.mu.Lock()
 		f.calls = append(f.calls, upstreamRequest{Path: r.URL.Path, Body: append([]byte(nil), body...)})
 		shouldFail := f.failRequests
+		blankSummary := f.blankSummary
 		f.mu.Unlock()
 
 		if shouldFail {
@@ -68,6 +70,9 @@ func newFakeUpstream() *fakeUpstream {
 		text := "delegated ordinary response"
 		if strings.Contains(string(body), "You are performing a CONTEXT CHECKPOINT COMPACTION") {
 			text = "fixture compact summary"
+			if blankSummary {
+				text = "   \n "
+			}
 		}
 		if request.Stream {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -132,6 +137,14 @@ func (f *fakeUpstream) clearFailure() {
 	f.failRequests = false
 }
 
+// setBlankSummary makes the summary model answer with whitespace only, which is
+// a generated compaction state the bridge must refuse to persist.
+func (f *fakeUpstream) setBlankSummary() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blankSummary = true
+}
+
 type harness struct {
 	baseURL  string
 	upstream *fakeUpstream
@@ -139,7 +152,31 @@ type harness struct {
 	logs     bytes.Buffer
 }
 
+// bridgeRuleYAML is the rule block used by most integration tests: one `bridge`
+// rule, so every other model, including native-test, is an unruled route.
+func bridgeRuleYAML() string {
+	return fmt.Sprintf(`      rules:
+        - match: %q
+          action: bridge
+          summary_model: %q
+`, bridgeModel, summaryModel)
+}
+
+// declaredNativeRuleYAML adds an explicit `passthrough` rule for native-test.
+// That rule is the administrator's declaration that the route can interpret its
+// own opaque compaction state; the plugin cannot verify which route produced it.
+func declaredNativeRuleYAML() string {
+	return bridgeRuleYAML() + fmt.Sprintf(`        - match: %q
+          action: passthrough
+`, nativeModel)
+}
+
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+	return newHarnessWithRules(t, bridgeRuleYAML())
+}
+
+func newHarnessWithRules(t *testing.T, ruleYAML string) *harness {
 	t.Helper()
 	bridgeRoot := bridgeRoot(t)
 	cpaSource := cpaSource(t)
@@ -174,11 +211,7 @@ plugins:
     cpa-codex-compact-bridge:
       enabled: true
       priority: 100
-      rules:
-        - match: %q
-          action: bridge
-          summary_model: %q
-openai-compatibility:
+%sopenai-compatibility:
   - name: integration-fake
     base-url: %q
     api-key-entries:
@@ -190,7 +223,7 @@ openai-compatibility:
         alias: %q
       - name: %q
         alias: %q
-`, port, filepath.Join(temp, "auth"), accessKey, filepath.Join(temp, "plugins"), bridgeModel, summaryModel, upstream.server.URL, bridgeModel, bridgeModel, summaryModel, summaryModel, nativeModel, nativeModel)
+`, port, filepath.Join(temp, "auth"), accessKey, filepath.Join(temp, "plugins"), ruleYAML, upstream.server.URL, bridgeModel, bridgeModel, summaryModel, summaryModel, nativeModel, nativeModel)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write CPA config: %v", err)
 	}
@@ -509,7 +542,12 @@ func TestWebSocketV2ReleaseGate(t *testing.T) {
 
 // --- Failure-path and edge-case integration tests ---
 
-const bridgeErrCode = "compact_bridge_failed"
+const (
+	bridgeErrCode = "compact_bridge_failed"
+	// stateErrCode is the stable, non-retryable code for compaction state that
+	// can never be continued.
+	stateErrCode = "invalid_compaction_state"
+)
 
 // TestScalarInputBridged verifies that a bridged model request with scalar
 // (string) input does not 502. This is a regression test for the bug where the
@@ -591,53 +629,205 @@ func TestNonBridgeModelDelegation(t *testing.T) {
 	}
 }
 
-// TestNonBridgeModelCompactionNotIntercepted verifies that the plugin's
-// request interceptor does not fail-closed on compaction items when the model
-// does not match any bridge rule.
-func TestNonBridgeModelCompactionNotIntercepted(t *testing.T) {
-	h := newHarness(t)
+// TestOpaqueStatePassesThroughOnDeclaredNativeRoute verifies that opaque state is
+// forwarded on a route an explicit `passthrough` rule declared native-compatible:
+// no rewrite, no rejection, and the request still reaches the upstream.
+func TestOpaqueStatePassesThroughOnDeclaredNativeRoute(t *testing.T) {
+	h := newHarnessWithRules(t, declaredNativeRuleYAML())
 	response := h.post(t, "/v1/responses", fixture(t, "native-compaction.json"))
-	if response.StatusCode == http.StatusBadGateway && strings.Contains(string(response.Body), bridgeErrCode) {
-		t.Fatalf("non-bridge model with compaction was fail-closed by plugin (must not intercept): %s", response.Body)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("declared native route status = %d, body=%s\nCPA logs:\n%s", response.StatusCode, response.Body, h.logs.String())
 	}
-	calls := h.upstream.snapshot()
-	if len(calls) < 1 {
-		t.Fatalf("non-bridge model with compaction did not reach upstream (plugin may have intercepted): %d calls", len(calls))
+	if calls := h.upstream.snapshot(); len(calls) != 1 {
+		t.Fatalf("declared native route did not reach upstream once: %#v", calls)
 	}
 }
 
-// TestUnknownCompactionItemFailClosed verifies that an unknown (non-cpa_compact_)
-// compaction item on a bridged model triggers fail-closed 502 and is never
-// forwarded to the upstream.
-func TestUnknownCompactionItemFailClosed(t *testing.T) {
+// TestOpaqueStateFailsClosedOnUnruledModel closes the no-match fail-open hole: an
+// unruled model is only CPA's default route, so nothing declares it able to read
+// opaque compaction state, and the request must never reach the upstream.
+func TestOpaqueStateFailsClosedOnUnruledModel(t *testing.T) {
+	for name, fixtureName := range map[string]string{
+		"opaque state with reasoning": "unruled-opaque-with-reasoning.json",
+		"opaque state alone":          "native-compaction.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.upstream.reset()
+			response := h.post(t, "/v1/responses", fixture(t, fixtureName))
+			requireStateError(t, response, h.logs.String())
+			if calls := h.upstream.snapshot(); len(calls) != 0 {
+				t.Fatalf("opaque state on an unruled model reached upstream: %#v", calls)
+			}
+		})
+	}
+}
+
+// TestReasoningOnlyHistoryIsUntouchedOnUnruledModel proves the state policy reads
+// only the `compaction` item type: an opaque reasoning item on the same unruled
+// route must not be mistaken for unreadable compaction state.
+func TestReasoningOnlyHistoryIsUntouchedOnUnruledModel(t *testing.T) {
+	h := newHarness(t)
+	response := h.post(t, "/v1/responses", fixture(t, "unruled-reasoning-only.json"))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("reasoning-only history status = %d, body=%s\nCPA logs:\n%s", response.StatusCode, response.Body, h.logs.String())
+	}
+	if strings.Contains(string(response.Body), stateErrCode) {
+		t.Fatalf("reasoning state was treated as compaction state: %s", response.Body)
+	}
+	if calls := h.upstream.snapshot(); len(calls) != 1 {
+		t.Fatalf("reasoning-only history did not reach upstream once: %#v", calls)
+	}
+}
+
+// TestBridgeStateNormalizesOnNativeTarget is the portability fix: plaintext
+// state created by the bridge continues at summary level on a target that has
+// no bridge rule at all, without pulling that target's own compact turns into
+// the facade.
+func TestBridgeStateNormalizesOnNativeTarget(t *testing.T) {
+	h := newHarness(t)
+	response := h.post(t, "/v1/responses", fixture(t, "passthrough-replay.json"))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("native target with bridge state status = %d, body=%s\nCPA logs:\n%s", response.StatusCode, response.Body, h.logs.String())
+	}
+	calls := h.upstream.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("upstream calls = %#v, want exactly 1", calls)
+	}
+	body := string(calls[0].Body)
+	if strings.Contains(body, "cpa_compact_fixture") || strings.Contains(body, `"type":"compaction"`) {
+		t.Fatalf("bridge compaction state leaked to a native target: %s", body)
+	}
+	if !strings.Contains(body, "previous compacted summary") {
+		t.Fatalf("bridge summary was not restored as ordinary input: %s", body)
+	}
+}
+
+// TestNativeStateFailsClosedOnBridgeTarget verifies the other direction: state
+// the facade cannot read is never forwarded to a bridged upstream.
+func TestNativeStateFailsClosedOnBridgeTarget(t *testing.T) {
 	h := newHarness(t)
 	response := h.post(t, "/v1/responses", fixture(t, "unknown-compaction.json"))
-	if response.StatusCode != http.StatusBadGateway {
-		t.Fatalf("unknown compaction item status = %d, want 502, body=%s", response.StatusCode, response.Body)
-	}
-	if !strings.Contains(string(response.Body), bridgeErrCode) {
-		t.Fatalf("unknown compaction item body missing %q: %s", bridgeErrCode, response.Body)
-	}
-	calls := h.upstream.snapshot()
-	if len(calls) != 0 {
-		t.Fatalf("unknown compaction item must not reach upstream: %#v", calls)
+	requireStateError(t, response, h.logs.String())
+	if calls := h.upstream.snapshot(); len(calls) != 0 {
+		t.Fatalf("unreadable compaction state must not reach upstream: %#v", calls)
 	}
 }
 
-// TestEmptyEncryptedContentFailClosed verifies that a cpa_compact_ item with
-// empty encrypted_content on a bridged model triggers fail-closed 502.
-func TestEmptyEncryptedContentFailClosed(t *testing.T) {
-	h := newHarness(t)
-	body := []byte(`{"model":"bridge-test","stream":false,"input":[` +
-		`{"type":"compaction","id":"cpa_compact_abc","encrypted_content":""},` +
-		`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}` +
-		`]}`)
-	response := h.post(t, "/v1/responses", body)
-	if response.StatusCode != http.StatusBadGateway {
-		t.Fatalf("empty encrypted_content status = %d, want 502, body=%s", response.StatusCode, response.Body)
+// TestMixedCompactionStateFailsClosedOnEveryTarget verifies that mixing bridge
+// state with native state fails closed whatever the target rule says, because
+// the retained history can no longer be interpreted reliably.
+func TestMixedCompactionStateFailsClosedOnEveryTarget(t *testing.T) {
+	for _, model := range []string{bridgeModel, nativeModel} {
+		t.Run(model, func(t *testing.T) {
+			h := newHarness(t)
+			body := strings.ReplaceAll(string(fixture(t, "mixed-compaction.json")), `"model": "bridge-test"`, `"model": "`+model+`"`)
+			response := h.post(t, "/v1/responses", []byte(body))
+			requireStateError(t, response, h.logs.String())
+			if calls := h.upstream.snapshot(); len(calls) != 0 {
+				t.Fatalf("mixed compaction state reached upstream: %#v", calls)
+			}
+		})
 	}
-	if !strings.Contains(string(response.Body), bridgeErrCode) {
-		t.Fatalf("empty encrypted_content body missing %q: %s", bridgeErrCode, response.Body)
+}
+
+// TestCorruptBridgeStateFailsClosedOnEveryTarget covers missing, empty, and
+// whitespace-only summary text on both target kinds.
+func TestCorruptBridgeStateFailsClosedOnEveryTarget(t *testing.T) {
+	variants := map[string]string{
+		"missing": `{"type":"compaction","id":"cpa_compact_abc"}`,
+		"empty":   `{"type":"compaction","id":"cpa_compact_abc","encrypted_content":""}`,
+		"blank":   `{"type":"compaction","id":"cpa_compact_abc","encrypted_content":"   "}`,
+	}
+	for _, model := range []string{bridgeModel, nativeModel} {
+		for name, item := range variants {
+			t.Run(model+"/"+name, func(t *testing.T) {
+				h := newHarness(t)
+				body := []byte(`{"model":"` + model + `","stream":false,"input":[` + item +
+					`,{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+				response := h.post(t, "/v1/responses", body)
+				requireStateError(t, response, h.logs.String())
+			})
+		}
+	}
+}
+
+// TestStreamingV2StateErrorIsOutOfBand verifies a V2 trigger carrying unreadable
+// state fails as an HTTP 400 error response instead of an in-band
+// response.failed frame over an open 200 stream: an SSE failure frame is
+// retryable for the Codex client, and this error can never resolve on retry.
+func TestStreamingV2StateErrorIsOutOfBand(t *testing.T) {
+	h := newHarness(t)
+	response := h.post(t, "/v1/responses", fixture(t, "v2-trigger-native-state.json"))
+	requireStateError(t, response, h.logs.String())
+	if strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("state error must not open a compact stream: content-type=%q", response.Header.Get("Content-Type"))
+	}
+	if frames := parseSSE(t, response.Body); len(frames) != 0 {
+		t.Fatalf("state error must not emit SSE frames: %q", frames)
+	}
+	if calls := h.upstream.snapshot(); len(calls) != 0 {
+		t.Fatalf("state error must fail before the Summary Model call: %#v", calls)
+	}
+}
+
+// TestV1CompactStateErrorIsNotRetryable applies the same rule to the standalone
+// compact endpoint on a bridged target.
+func TestV1CompactStateErrorIsNotRetryable(t *testing.T) {
+	h := newHarness(t)
+	response := h.post(t, "/v1/responses/compact", fixture(t, "unknown-compaction.json"))
+	requireStateError(t, response, h.logs.String())
+	if calls := h.upstream.snapshot(); len(calls) != 0 {
+		t.Fatalf("V1 state error must fail before any summary call: %#v", calls)
+	}
+}
+
+// TestBlankSummaryIsRuntimeCompactionFailure keeps the generation side on the
+// retryable contract: an unusable summary never becomes a compaction item, and
+// V1/V2 report the existing runtime failure.
+func TestBlankSummaryIsRuntimeCompactionFailure(t *testing.T) {
+	h := newHarness(t)
+	h.upstream.setBlankSummary()
+
+	v1 := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact.json"))
+	if v1.StatusCode != http.StatusBadGateway || !strings.Contains(string(v1.Body), bridgeErrCode) && !strings.Contains(string(v1.Body), "compaction failed") {
+		t.Fatalf("V1 blank summary status = %d, body=%s", v1.StatusCode, v1.Body)
+	}
+	if strings.Contains(string(v1.Body), "cpa_compact_") {
+		t.Fatalf("V1 stored a blank compaction item: %s", v1.Body)
+	}
+
+	h.upstream.reset()
+	v2 := h.post(t, "/v1/responses", fixture(t, "v2-compact.json"))
+	if v2.StatusCode != http.StatusOK {
+		t.Fatalf("V2 blank summary status = %d, body=%s", v2.StatusCode, v2.Body)
+	}
+	events := parseSSE(t, v2.Body)
+	failed, completed, item := false, false, false
+	for _, event := range events {
+		switch eventType(event) {
+		case "response.failed":
+			failed = true
+		case "response.completed":
+			completed = true
+		case "response.output_item.done":
+			item = true
+		}
+	}
+	if !failed || completed || item {
+		t.Fatalf("V2 blank summary must fail without an output item: %q", v2.Body)
+	}
+}
+
+// requireStateError asserts the deterministic client-error contract the Codex
+// client treats as terminal: HTTP 400 with the stable code.
+func requireStateError(t *testing.T, response httpResult, logs string) {
+	t.Helper()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("state error status = %d, want 400, body=%s\nCPA logs:\n%s", response.StatusCode, response.Body, logs)
+	}
+	if !strings.Contains(string(response.Body), stateErrCode) {
+		t.Fatalf("state error body missing %q: %s", stateErrCode, response.Body)
 	}
 }
 

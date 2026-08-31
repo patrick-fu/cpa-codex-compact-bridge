@@ -58,7 +58,7 @@ const (
 
 // pluginVersion can be overridden in release builds with:
 // -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=<version>"
-var pluginVersion = "0.1.2"
+var pluginVersion = "0.1.3"
 
 // configHolder holds the active parsed configuration. It is replaced atomically
 // on plugin.register / plugin.reconfigure.
@@ -281,6 +281,11 @@ func executeV1Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 	summaryModel := pickSummaryModel(req, decision)
 	summary, err := generateSummary(cfg, req, summaryModel, req.HostCallbackID)
 	if err != nil {
+		// A state error is deterministic: report it as a client error instead of
+		// the retryable runtime failure.
+		if stateErr := asInvalidCompactionState(err); stateErr != nil {
+			return nil, stateErr
+		}
 		return nil, &pluginErr{
 			Code:       errCodeCompactBridgeFailed,
 			Message:    "bridged compaction failed",
@@ -303,7 +308,12 @@ func executeV2Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 	summaryModel := pickSummaryModel(req, decision)
 	summary, err := generateSummary(cfg, req, summaryModel, req.HostCallbackID)
 	if err != nil {
-		// V2 failure: emit response.failed (no partial, no completed).
+		// Unreadable state never resolves on retry, so reject with a client error
+		// before any SSE frame instead of an in-band response.failed.
+		if stateErr := asInvalidCompactionState(err); stateErr != nil {
+			return nil, stateErr
+		}
+		// V2 runtime failure: emit response.failed (no partial, no completed).
 		failed := v2ResponseFailedSSE("bridged compaction failed")
 		return okEnvelope(map[string]any{
 			"Headers": map[string][]string{"content-type": {"text/event-stream"}},
@@ -325,15 +335,15 @@ func executeV2Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 	})
 }
 
-// executeOrdinaryBridged normalizes cpa_compact_ items for replay then delegates
-// the ordinary turn to CPA via host.model callback.
+// executeOrdinaryBridged applies the compaction state policy for a bridged
+// target, then delegates the ordinary turn to CPA via host.model callback.
 func executeOrdinaryBridged(req rpcExecutorRequest, stream bool) ([]byte, error) {
-	result, err := normalizeForReplay(req.OriginalRequest)
+	result, err := normalizeCompactionState(req.OriginalRequest, targetBridge)
 	if err != nil {
+		if stateErr := asInvalidCompactionState(err); stateErr != nil {
+			return nil, stateErr
+		}
 		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: err.Error(), HTTPStatus: 502}
-	}
-	if !result.Normalized {
-		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: "fail-closed: unknown compaction item", HTTPStatus: 502}
 	}
 	req.OriginalRequest = result.Body
 	return delegateOrdinary(req, stream)
@@ -398,14 +408,7 @@ func generateSummary(cfg Config, req rpcExecutorRequest, summaryModel, hostCallb
 	if err != nil {
 		return "", err
 	}
-	text, err := extractAssistantText(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if text == "" {
-		return "", &pluginErr{Code: "empty_summary", Message: "summary model produced no text"}
-	}
-	return text, nil
+	return extractSummaryText(resp.Body)
 }
 
 // buildSummaryRequestBody constructs the summary request body: keep the model,

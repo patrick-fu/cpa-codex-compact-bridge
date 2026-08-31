@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // v1CompactResponseBody builds the non-streaming V1 compact response body.
@@ -33,6 +34,9 @@ func v1CompactResponseBody(items []inputItem, itemID, summary string) ([]byte, e
 // v2CompactionItemJSON builds the plaintext V2 compaction item object.
 // {"type":"compaction","id":"cpa_compact_<uuid>","encrypted_content":"<summary>"}
 func v2CompactionItemJSON(id, summary string) ([]byte, error) {
+	if strings.TrimSpace(summary) == "" {
+		return nil, fmt.Errorf("refusing to store a blank compaction summary")
+	}
 	item := map[string]any{
 		"type":              compactionType,
 		"id":                id,
@@ -106,8 +110,13 @@ func v2ResponseFailedSSE(message string) []byte {
 	return out
 }
 
-// errCodeCompactBridgeFailed is the stable failure code for both V1 and V2.
+// errCodeCompactBridgeFailed is the stable failure code for retryable
+// runtime compact failures: summary generation, network, and upstream errors.
 const errCodeCompactBridgeFailed = "compact_bridge_failed"
+
+// errCodeInvalidCompactionState is the stable failure code for compaction
+// state that can never be continued. It is a client error and is not retried.
+const errCodeInvalidCompactionState = "invalid_compaction_state"
 
 // extractAssistantText extracts the plain text from a Responses or
 // chat-completions assistant message produced by the summary model. It handles
@@ -148,4 +157,18 @@ func extractAssistantText(body []byte) (string, error) {
 		return chat.Choices[0].Message.Content, nil
 	}
 	return "", fmt.Errorf("no assistant text found in summary model response")
+}
+
+// extractSummaryText returns the summary text of a Summary Model response. A
+// blank result is a runtime compaction failure: storing it would install a
+// compaction item that later turns can only reject.
+func extractSummaryText(body []byte) (string, error) {
+	text, err := extractAssistantText(body)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", &pluginErr{Code: errCodeCompactBridgeFailed, Message: "summary model produced no usable text"}
+	}
+	return text, nil
 }

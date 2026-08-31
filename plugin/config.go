@@ -86,6 +86,22 @@ func decideRoute(cfg Config, model string) matchDecision {
 	return decision
 }
 
+// compactionTargetFor translates a routing decision into the target used by
+// the Compaction State Policy. Handled without Bridged means an explicit
+// `passthrough` Bridge Rule matched, which is the administrator's statement
+// that the route is native-compatible; no rule matching at all is only
+// CPA's default route and cannot make that claim.
+func compactionTargetFor(decision matchDecision) compactTarget {
+	switch {
+	case decision.Handled && decision.Bridged:
+		return targetBridge
+	case decision.Handled:
+		return targetExplicitPassthrough
+	default:
+		return targetUnmatchedPassthrough
+	}
+}
+
 // globMatch wraps filepath.Match as an ordered, case-sensitive glob.
 func globMatch(pattern, name string) bool {
 	if pattern == "" {

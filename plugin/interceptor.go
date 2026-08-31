@@ -25,36 +25,60 @@ func handleRequestInterceptBefore(request []byte) ([]byte, error) {
 	return okEnvelope(response)
 }
 
-// normalizeInterceptedReplay transforms only marked bridge state. It leaves
-// ordinary requests untouched and rejects opaque native compaction state.
+// normalizeInterceptedReplay applies the compaction state policy to every
+// Responses request, whichever route its target model uses. Bridge state is
+// plugin-owned and always normalizes onward; opaque native state only continues
+// on a route an explicit `passthrough` rule declared native-compatible.
 func normalizeInterceptedReplay(cfg Config, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
-	decision := decideRoute(cfg, req.RequestedModel)
-	if !decision.Handled || !decision.Bridged || req.SourceFormat != "openai-response" {
+	if req.SourceFormat != "openai-response" {
 		return pluginapi.RequestInterceptResponse{}
 	}
+	target := compactionTargetFor(decideRoute(cfg, req.RequestedModel))
 	items, ok := parseRequestInputItems(req.Body)
 	if !ok || !hasCompactionItems(items) {
 		return pluginapi.RequestInterceptResponse{}
 	}
-	result, err := normalizeForReplay(req.Body)
+	result, err := normalizeCompactionState(req.Body, target)
 	if err != nil {
+		if stateErr := asInvalidCompactionState(err); stateErr != nil {
+			return pluginapi.RequestInterceptResponse{
+				Terminate:       true,
+				StatusCode:      stateErr.HTTPStatus,
+				ResponseHeaders: jsonHeaders(),
+				ResponseBody:    errorBody(stateErr.Code, stateErr.Message, "invalid_request_error"),
+			}
+		}
 		return pluginapi.RequestInterceptResponse{
 			Terminate:       true,
 			StatusCode:      http.StatusBadGateway,
-			ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}},
+			ResponseHeaders: jsonHeaders(),
 			ResponseBody:    compactBridgeFailureBody(),
 		}
+	}
+	if !result.Changed {
+		return pluginapi.RequestInterceptResponse{}
 	}
 	return pluginapi.RequestInterceptResponse{Body: result.Body}
 }
 
+// compactBridgeFailureBody is the retryable runtime failure returned when the
+// facade cannot normalize state it already owns.
 func compactBridgeFailureBody() []byte {
+	return errorBody(errCodeCompactBridgeFailed, "bridged compaction failed", "server_error")
+}
+
+// errorBody builds a standard OpenAI error envelope.
+func errorBody(code, message, errType string) []byte {
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{
-			"message": "bridged compaction failed",
-			"type":    "server_error",
-			"code":    errCodeCompactBridgeFailed,
+			"message": message,
+			"type":    errType,
+			"code":    code,
 		},
 	})
 	return body
+}
+
+func jsonHeaders() http.Header {
+	return http.Header{"Content-Type": []string{"application/json"}}
 }

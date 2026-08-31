@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -236,31 +235,109 @@ func TestBuildSummaryRequestInputFailsClosedForInvalidCompactState(t *testing.T)
 		{"missing content", inputItem{Type: compactionType, ID: "cpa_compact_abc", Raw: mustJSON(t, `{"type":"compaction","id":"cpa_compact_abc"}`)}},
 		{"whitespace content", inputItem{Type: compactionType, ID: "cpa_compact_abc", EncryptedContent: " \t\n ", Raw: mustJSON(t, `{"type":"compaction","id":"cpa_compact_abc","encrypted_content":" \\t\\n "}`)}},
 	}
+	wantMessages := map[string]string{
+		"unknown compact id": msgNativeCompactionOnBridge,
+		"prefix only id":     msgNativeCompactionOnBridge,
+		"missing content":    msgCorruptBridgeCompaction,
+		"whitespace content": msgCorruptBridgeCompaction,
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out, err := buildSummaryRequestInput([]inputItem{tt.item})
-			if err == nil || out != nil || !strings.Contains(err.Error(), "refusing to summarize opaque compact state") {
+			if err == nil || out != nil {
 				t.Fatalf("expected fail-closed error, got out=%s err=%v", out, err)
 			}
+			// A summary turn is always bridge-owned, so unreadable state fails
+			// closed as a client error before any Summary Model request.
+			requireFailClosed(t, err, wantMessages[tt.name])
 		})
 	}
 }
 
-func TestRewriteInputItemsFailsClosedForInvalidCompactState(t *testing.T) {
+func TestRewriteCompactionItemsTargets(t *testing.T) {
+	native := inputItem{Type: compactionType, ID: "native_compact_abc", EncryptedContent: "opaque", Raw: mustJSON(t, `{"type":"compaction","id":"native_compact_abc","encrypted_content":"opaque"}`)}
+	corrupt := inputItem{Type: compactionType, ID: "cpa_compact_abc", EncryptedContent: " \n ", Raw: mustJSON(t, `{"type":"compaction","id":"cpa_compact_abc","encrypted_content":" \n "}`)}
+	readable := inputItem{Type: compactionType, ID: "cpa_compact_abc", EncryptedContent: "summary", Raw: mustJSON(t, `{"type":"compaction","id":"cpa_compact_abc","encrypted_content":"summary"}`)}
+	question := inputItem{Type: "message", Role: "user", Raw: mustJSON(t, `{"type":"message","role":"user","content":"q"}`)}
+
+	// want lists the fail-closed message per target; a target that is absent
+	// continues through the policy, and wantRewrite tells whether its items were
+	// restored as an ordinary user summary.
 	tests := []struct {
-		name string
-		item inputItem
+		name        string
+		items       []inputItem
+		want        map[compactTarget]string
+		wantRewrite bool
 	}{
-		{"unknown compact id", inputItem{Type: compactionType, ID: "native_compact_abc", EncryptedContent: "opaque", Raw: mustJSON(t, `{"type":"compaction","id":"native_compact_abc","encrypted_content":"opaque"}`)}},
-		{"marked but whitespace summary", inputItem{Type: compactionType, ID: "cpa_compact_abc", EncryptedContent: " \n ", Raw: mustJSON(t, `{"type":"compaction","id":"cpa_compact_abc","encrypted_content":" \\n "}`)}},
+		{
+			name:  "native state only",
+			items: []inputItem{question, native},
+			want: map[compactTarget]string{
+				targetUnmatchedPassthrough: msgUnruledNativeCompaction,
+				targetBridge:               msgNativeCompactionOnBridge,
+			},
+		},
+		{
+			name:  "corrupt bridge state",
+			items: []inputItem{question, corrupt},
+			want: map[compactTarget]string{
+				targetExplicitPassthrough:  msgCorruptBridgeCompaction,
+				targetUnmatchedPassthrough: msgCorruptBridgeCompaction,
+				targetBridge:               msgCorruptBridgeCompaction,
+			},
+		},
+		{
+			name:  "mixed state",
+			items: []inputItem{readable, native},
+			want: map[compactTarget]string{
+				targetExplicitPassthrough:  msgMixedCompactionState,
+				targetUnmatchedPassthrough: msgMixedCompactionState,
+				targetBridge:               msgMixedCompactionState,
+			},
+		},
+		{
+			name:        "valid bridge state",
+			items:       []inputItem{question, readable},
+			want:        map[compactTarget]string{},
+			wantRewrite: true,
+		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := rewriteInputItems([]inputItem{tt.item})
-			if err == nil || out != nil {
-				t.Fatalf("expected fail-closed rewrite, got out=%s err=%v", out, err)
-			}
-		})
+		for _, target := range allCompactTargets {
+			t.Run(tt.name+" on "+target.String(), func(t *testing.T) {
+				out, changed, err := rewriteCompactionItems(tt.items, target)
+				wantMessage, rejected := tt.want[target]
+				if rejected {
+					if err == nil || out != nil || changed {
+						t.Fatalf("expected fail closed, got out=%s changed=%v err=%v", out, changed, err)
+					}
+					requireFailClosed(t, err, wantMessage)
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if changed != tt.wantRewrite {
+					t.Fatalf("changed = %v, want %v (out=%s)", changed, tt.wantRewrite, out)
+				}
+				if !changed {
+					if string(out[1]) != string(native.Raw) {
+						t.Fatalf("native item must continue byte-for-byte: %s", out)
+					}
+					return
+				}
+				if len(out) != 2 {
+					t.Fatalf("expected 2 items, got %s", out)
+				}
+				var restored map[string]any
+				if err := json.Unmarshal(out[1], &restored); err != nil {
+					t.Fatalf("decode restored item: %v", err)
+				}
+				if restored["type"] != "message" || restored["role"] != "user" || restored["content"] != "summary" {
+					t.Fatalf("expected ordinary user summary, got %v", restored)
+				}
+			})
+		}
 	}
 }
 

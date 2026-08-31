@@ -54,21 +54,47 @@ func FuzzParseRequestInputItems(f *testing.F) {
 	})
 }
 
-func FuzzNormalizeForReplay(f *testing.F) {
+// FuzzNormalizeCompactionState checks three protocol invariants over arbitrary
+// bodies: strictness is monotonic in the target (a state error on a more
+// permissive route must also fail on every stricter route), the accepted
+// rewrite never depends on the target, and normalization is one-way.
+func FuzzNormalizeCompactionState(f *testing.F) {
 	for _, body := range compactFuzzBodies() {
 		f.Add(body)
 	}
 	f.Fuzz(func(t *testing.T, body []byte) {
-		result, err := normalizeForReplay(body)
-		if err != nil || !result.Normalized {
-			return
-		}
-		if !json.Valid(result.Body) {
-			t.Fatalf("successful replay normalization returned invalid JSON: %q", result.Body)
+		var stateErr *pluginErr
+		var rewritten []byte
+		for _, target := range allCompactTargets {
+			result, err := normalizeCompactionState(body, target)
+			if current := asInvalidCompactionState(err); current != nil {
+				if stateErr != nil && current.Code != stateErr.Code {
+					t.Fatalf("%q: %s changed the state error code from %q to %q", body, target, stateErr.Code, current.Code)
+				}
+				stateErr = current
+				continue
+			}
+			if stateErr != nil {
+				t.Fatalf("%q: %s accepted a state that a more permissive target rejected: %v", body, target, err)
+			}
+			if !result.Changed {
+				continue
+			}
+			if !json.Valid(result.Body) {
+				t.Fatalf("%s rewrite returned invalid JSON: %q", target, result.Body)
+			}
+			// Normalization is one-way: no compaction item may survive it.
+			items, ok := parseRequestInputItems(result.Body)
+			if !ok || hasCompactionItems(items) {
+				t.Fatalf("%s rewrite left compaction state in the request: %s", target, result.Body)
+			}
+			if rewritten != nil && string(rewritten) != string(result.Body) {
+				t.Fatalf("%q: the accepted rewrite depends on the target: %s vs %s", body, rewritten, result.Body)
+			}
+			rewritten = result.Body
 		}
 	})
 }
-
 func FuzzHandleModelRoute(f *testing.F) {
 	configureFuzzBridge(f)
 	for _, body := range compactFuzzBodies() {
