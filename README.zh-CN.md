@@ -84,17 +84,18 @@ GPT 会话保持 native passthrough，独立的第三方 sub-agent 会话命中 
 - 插件 module 当前依赖 CLIProxyAPI **v7.2.120** SDK；与 **v7.2.125** 的兼容性由集成 gate 覆盖。
 - 集成测试覆盖 V1、V2 HTTP/SSE、HTTP 与流式 replay、WebSocket V2 continuation、跨目标的 compact 状态矩阵、不可重试的 400 错误形状与 passthrough 隔离。
 - test-cpa 真实 Provider 评测（包括原生 V2 / bridge V2 / local 对比）记录见[测试矩阵](docs/research/test-cpa-real-session-matrix-2026-08-13.md)。
-- 稳定版本：[v0.1.3](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.3)，发布 linux/amd64 产物及 sha256sum 兼容 checksum 文件。
-- macOS、Windows、非 amd64 架构及其他 CPA 版本尚未验证。
+- 稳定版本：[v0.1.3](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.3)，发布 linux/amd64、macOS/arm64 与 macOS/amd64 产物，并提供统一的 sha256sum 兼容 checksum 文件。
+- v0.1.3 的两个 macOS 包已在 arm64 Mac 上完成构建与 ABI smoke，其中 amd64 包还通过了 Rosetta 加载测试。后续 tag 会由 Release CI 自动执行同类构建与 ABI 检查；完整 CPA 集成测试仍只在 linux/amd64 运行。Windows 与其他 CPA 版本尚未验证。
 
 ## 安装
 
 下载并校验 linux/amd64 Release：
 
 ```bash
+set -euo pipefail
 curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
 curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/checksums.txt
-sha256sum -c checksums.txt
+grep '  cpa-codex-compact-bridge_0.1.3_linux_amd64.zip$' checksums.txt | sha256sum -c -
 unzip cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
 ```
 
@@ -106,6 +107,24 @@ unzip cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
 
 reload 或重启 CPA 后，通过 `GET /v0/management/plugins` 确认版本为 `0.1.3`、`registered: true`、`effective_enabled: true`。仅发现新文件时，CPA 可能先更新所选路径，但尚未替换已加载实例。
 
+macOS 根据本机架构选择压缩包，并只校验当前压缩包对应的 checksum：
+
+```bash
+set -euo pipefail
+case "$(uname -m)" in
+  arm64) arch=arm64 ;;
+  x86_64) arch=amd64 ;;
+  *) echo "unsupported macOS architecture" >&2; exit 1 ;;
+esac
+archive="cpa-codex-compact-bridge_0.1.3_darwin_${arch}.zip"
+curl -LO "https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/${archive}"
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/checksums.txt
+grep "  ${archive}$" checksums.txt | shasum -a 256 -c -
+unzip "$archive"
+```
+
+把解压出的 dylib 安装为 `<plugin-dir>/darwin/<arm64|amd64>/cpa-codex-compact-bridge-v0.1.3.dylib`。
+
 如需从源码构建：
 
 ```bash
@@ -113,7 +132,7 @@ cd plugin
 go build -buildmode=c-shared -o cpa-codex-compact-bridge.so .
 ```
 
-macOS 使用 `.dylib`，Windows 使用 `.dll`，目录替换为对应 `<GOOS>/<GOARCH>`。Release CI 覆盖这些平台前均视为实验性。
+macOS 使用 `.dylib`，Windows 使用 `.dll`，目录替换为对应 `<GOOS>/<GOARCH>`。v0.1.3 的 macOS arm64 与 amd64 包已有本地构建和 ABI smoke 覆盖，后续 tag 会在 Release CI 执行同类检查；完整 CPA 集成测试仍只在 linux/amd64 运行，Windows 仍属实验性且未被 Release CI 覆盖。
 
 ## 配置
 
@@ -153,9 +172,7 @@ CLIProxyAPI **Home 模式会禁用 plugin executor routing**，因此不能与 `
 
 ## CPA Plugin Store
 
-本插件**尚未列入**[官方 CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)，因此目前不能通过 CPA 内置商店安装。
-
-v0.1.3 GitHub Release 与 CPA Plugin Store 上架相互独立。商店更新仍需单独提交修改 `registry.json` 的 PR；当前清单见[商店准入报告](docs/research/cpa-plugin-store-publication.md)。
+本插件已通过 Store PR #80 列入[官方 CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)。商店会自动读取最新 GitHub Release，正常发布新版本无需单独提交修改 `registry.json` 的 PR。
 
 ## 验证
 

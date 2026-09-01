@@ -6,35 +6,21 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build, gate, and publish linux/amd64 release
+  validate:
+    name: Validate release tag and source metadata
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         # actions/checkout v5.1.0
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
-
-      - name: Checkout pinned CLIProxyAPI (v7.2.125)
-        # actions/checkout v5.1.0
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          repository: router-for-me/CLIProxyAPI
-          ref: 2e6b1d83f6c304a102aa33c1faf0a4f94d0d331e # v7.2.125
-          path: cpa
-
-      - name: Set up Go
-        # actions/setup-go v6.5.0
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version-file: plugin/go.mod
-          cache-dependency-path: |
-            plugin/go.sum
-            integration/go.sum
 
       - name: Parse and validate version
         id: version
@@ -57,17 +43,50 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: plugin/go.mod
+          cache-dependency-path: plugin/go.sum
+
       - name: Verify default source metadata matches the release tag
         working-directory: plugin
         env:
           CPA_COMPACT_EXPECTED_PLUGIN_VERSION: ${{ steps.version.outputs.version }}
         run: go test -run '^TestPluginRegisterResponseUsesConfiguredVersion$' -count=1 .
 
+  build-linux:
+    name: Build, gate, and package linux/amd64 release
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout pinned CLIProxyAPI (v7.2.125)
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: router-for-me/CLIProxyAPI
+          ref: 2e6b1d83f6c304a102aa33c1faf0a4f94d0d331e # v7.2.125
+          path: cpa
+
+      - name: Set up Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: plugin/go.mod
+          cache-dependency-path: |
+            plugin/go.sum
+            integration/go.sum
+
       - name: Unit test with release metadata
         working-directory: plugin
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          CPA_COMPACT_EXPECTED_PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          CPA_COMPACT_EXPECTED_PLUGIN_VERSION: ${{ needs.validate.outputs.version }}
         run: go test -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=$VERSION" ./...
 
       - name: Vet
@@ -77,43 +96,33 @@ jobs:
       - name: Build c-shared ABI library
         working-directory: plugin
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          mkdir -p ../stage
+          mkdir -p ../stage/linux_amd64
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -buildmode=c-shared \
             -ldflags "-X main.pluginVersion=$VERSION" \
-            -o ../stage/cpa-codex-compact-bridge.so .
+            -o ../stage/linux_amd64/cpa-codex-compact-bridge.so .
           # c-shared also emits a header next to the library; keep the stage
           # directory limited to the shared object so the zip root is exact.
-          rm -f ../stage/cpa-codex-compact-bridge.h
-          file ../stage/cpa-codex-compact-bridge.so
-          strings ../stage/cpa-codex-compact-bridge.so | grep -F "$VERSION"
+          rm -f ../stage/linux_amd64/cpa-codex-compact-bridge.h
+          file ../stage/linux_amd64/cpa-codex-compact-bridge.so
+          strings ../stage/linux_amd64/cpa-codex-compact-bridge.so | grep -F "$VERSION"
 
-      - name: Package release archive and checksums
+      - name: Package release archive
         id: package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           zip_name="cpa-codex-compact-bridge_${VERSION}_linux_amd64.zip"
-          (cd stage && zip -X "../$zip_name" cpa-codex-compact-bridge.so)
-
-          # The zip root must contain exactly the shared library.
+          (cd stage/linux_amd64 && zip -X "../../$zip_name" cpa-codex-compact-bridge.so)
           entries="$(unzip -Z1 "$zip_name")"
           if [ "$entries" != "cpa-codex-compact-bridge.so" ]; then
             echo "::error::zip root must contain exactly 'cpa-codex-compact-bridge.so'; got:"
             printf '%s\n' "$entries"
             exit 1
           fi
-
-          # sha256sum-format checksum of the archive.
-          sha256sum "$zip_name" > checksums.txt
-
-          # Verify the checksum round-trips.
-          sha256sum -c checksums.txt
-
           echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
-          ls -l "$zip_name" checksums.txt
 
       - name: Integration gate against pinned CLIProxyAPI
         working-directory: integration
@@ -121,19 +130,161 @@ jobs:
           CPA_SOURCE_DIR: ${{ github.workspace }}/cpa
         run: go test ./...
 
+      - name: Upload linux/amd64 release archive
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-linux-amd64
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+  build-macos:
+    name: Build and package ${{ matrix.asset }} release
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            goarch: amd64
+            lipo_arch: x86_64
+            asset: darwin_amd64
+          - runner: macos-15
+            goarch: arm64
+            lipo_arch: arm64
+            asset: darwin_arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up Go
+        # actions/setup-go v6.5.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: plugin/go.mod
+          cache-dependency-path: plugin/go.sum
+
+      - name: Unit test with release metadata
+        working-directory: plugin
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          CPA_COMPACT_EXPECTED_PLUGIN_VERSION: ${{ needs.validate.outputs.version }}
+        run: go test -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=$VERSION" ./...
+
+      - name: Build and verify c-shared ABI library
+        working-directory: plugin
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+          LIPO_ARCH: ${{ matrix.lipo_arch }}
+        run: |
+          arch="$GOARCH"
+          mkdir -p "../stage/${arch}"
+          CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" \
+            go build -buildmode=c-shared \
+            -ldflags "-X main.pluginVersion=$VERSION" \
+            -o "../stage/${arch}/cpa-codex-compact-bridge.dylib" .
+          rm -f "../stage/${arch}/cpa-codex-compact-bridge.h"
+          library="../stage/${arch}/cpa-codex-compact-bridge.dylib"
+          file "$library" | grep -F "Mach-O 64-bit dynamically linked shared library"
+          lipo -info "$library" | grep -F "$LIPO_ARCH"
+          strings "$library" | grep -F "$VERSION"
+          for symbol in cliproxy_plugin_init cliproxyPluginCall cliproxyPluginFree cliproxyPluginShutdown; do
+            nm -gU "$library" | grep -Eq "_?${symbol}$"
+          done
+
+      - name: Package release archive
+        id: package
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          ASSET: ${{ matrix.asset }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          zip_name="cpa-codex-compact-bridge_${VERSION}_${ASSET}.zip"
+          (cd "stage/${GOARCH}" && zip -X "../../${zip_name}" cpa-codex-compact-bridge.dylib)
+          entries="$(unzip -Z1 "$zip_name")"
+          if [ "$entries" != "cpa-codex-compact-bridge.dylib" ]; then
+            echo "::error::zip root must contain exactly 'cpa-codex-compact-bridge.dylib'; got:"
+            printf '%s\n' "$entries"
+            exit 1
+          fi
+          echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ${{ matrix.asset }} release archive
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-${{ matrix.asset }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+  publish:
+    name: Assemble and publish release
+    needs:
+      - validate
+      - build-linux
+      - build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        # actions/download-artifact v5.0.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Verify archives and generate checksums
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          archives=(
+            "cpa-codex-compact-bridge_${VERSION}_linux_amd64.zip"
+            "cpa-codex-compact-bridge_${VERSION}_darwin_arm64.zip"
+            "cpa-codex-compact-bridge_${VERSION}_darwin_amd64.zip"
+          )
+          for archive in "${archives[@]}"; do
+            if [ ! -f "release/$archive" ]; then
+              echo "::error::Missing release archive: $archive"
+              exit 1
+            fi
+          done
+          if [ "$(unzip -Z1 "release/${archives[0]}")" != "cpa-codex-compact-bridge.so" ]; then
+            echo "::error::linux archive must contain exactly cpa-codex-compact-bridge.so"
+            exit 1
+          fi
+          for archive in "${archives[@]:1}"; do
+            if [ "$(unzip -Z1 "release/$archive")" != "cpa-codex-compact-bridge.dylib" ]; then
+              echo "::error::$archive must contain exactly cpa-codex-compact-bridge.dylib"
+              exit 1
+            fi
+          done
+          (
+            cd release || exit
+            sha256sum "${archives[@]}" > checksums.txt
+            [ "$(wc -l < checksums.txt)" -eq 3 ]
+            sha256sum -c checksums.txt
+          )
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          tag="${{ steps.version.outputs.tag }}"
-          zip="${{ steps.package.outputs.zip }}"
+          assets=(release/*.zip release/checksums.txt)
           # Re-runs refresh an existing release. Other creation failures stay
           # visible instead of being misclassified as an existing release.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$zip" checksums.txt --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$tag" \
-            --title "cpa-codex-compact-bridge v${{ steps.version.outputs.version }}" \
-            --generate-notes \
-            "$zip" checksums.txt
+            gh release create "$TAG" \
+              --title "cpa-codex-compact-bridge v$VERSION" \
+              --generate-notes \
+              "${assets[@]}"
           fi

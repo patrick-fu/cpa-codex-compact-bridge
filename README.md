@@ -84,17 +84,18 @@ Expose native-capable and third-party models side by side. Each new session foll
 - The plugin module currently uses the CLIProxyAPI **v7.2.120** SDK; compatibility with **v7.2.125** is covered by the integration gate.
 - The integration suite covers V1, V2 HTTP/SSE, HTTP and streaming replay, WebSocket V2 continuation, the cross-target compaction state matrix, the non-retryable 400 error shape, and passthrough isolation.
 - Real-provider test-cpa evaluations, including the native V2 / bridge V2 / local comparison, are recorded in [the test matrix](docs/research/test-cpa-real-session-matrix-2026-08-13.md).
-- Stable release: [v0.1.3](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.3), published for linux/amd64 with a sha256sum-compatible checksum file.
-- macOS, Windows, non-amd64 builds, and other CPA versions remain unverified.
+- Stable release: [v0.1.3](https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/tag/v0.1.3), published for linux/amd64, macOS/arm64, and macOS/amd64 with one sha256sum-compatible checksum file.
+- The v0.1.3 macOS archives were built and ABI-smoke-tested on an arm64 Mac, including an amd64 load test under Rosetta. Release CI automates the same build and ABI checks for future tags; full CPA integration remains linux/amd64-only. Windows and other CPA versions remain unverified.
 
 ## Installation
 
 Download the linux/amd64 release and verify it before extraction:
 
 ```bash
+set -euo pipefail
 curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
 curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/checksums.txt
-sha256sum -c checksums.txt
+grep '  cpa-codex-compact-bridge_0.1.3_linux_amd64.zip$' checksums.txt | sha256sum -c -
 unzip cpa-codex-compact-bridge_0.1.3_linux_amd64.zip
 ```
 
@@ -106,6 +107,24 @@ Install the extracted library under a versioned filename:
 
 Reload or restart CPA, then confirm `GET /v0/management/plugins` reports version `0.1.3`, `registered: true`, and `effective_enabled: true`. File discovery alone may select the new path before the already loaded plugin instance is replaced.
 
+On macOS, select the archive that matches the host and verify only that archive's checksum:
+
+```bash
+set -euo pipefail
+case "$(uname -m)" in
+  arm64) arch=arm64 ;;
+  x86_64) arch=amd64 ;;
+  *) echo "unsupported macOS architecture" >&2; exit 1 ;;
+esac
+archive="cpa-codex-compact-bridge_0.1.3_darwin_${arch}.zip"
+curl -LO "https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/${archive}"
+curl -LO https://github.com/patrick-fu/cpa-codex-compact-bridge/releases/download/v0.1.3/checksums.txt
+grep "  ${archive}$" checksums.txt | shasum -a 256 -c -
+unzip "$archive"
+```
+
+Install the extracted dylib under `<plugin-dir>/darwin/<arm64|amd64>/cpa-codex-compact-bridge-v0.1.3.dylib`.
+
 To build from source instead:
 
 ```bash
@@ -113,7 +132,7 @@ cd plugin
 go build -buildmode=c-shared -o cpa-codex-compact-bridge.so .
 ```
 
-Use `.dylib` on macOS or `.dll` on Windows and replace the directory with the matching `<GOOS>/<GOARCH>`. These platforms are experimental until release CI covers them.
+Use `.dylib` on macOS or `.dll` on Windows and replace the directory with the matching `<GOOS>/<GOARCH>`. The v0.1.3 macOS archives have local build and ABI smoke coverage; future tags receive the same checks in release CI. Full CPA integration remains linux/amd64-only. Windows remains experimental and is not covered by release CI.
 
 ## Configuration
 
@@ -153,9 +172,7 @@ The plugin fails closed instead of forwarding an unsupported compact request or 
 
 ## CPA Plugin Store
 
-This plugin is **not yet listed** in the [official CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), so CPA's built-in store cannot install it today.
-
-The v0.1.3 GitHub Release is independent of CPA Plugin Store publication. A store update still requires a separate `registry.json` pull request; see the [store readiness report](docs/research/cpa-plugin-store-publication.md).
+This plugin is listed in the [official CPA Plugin Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store) through Store PR #80. The Store reads the latest GitHub Release automatically, so normal version releases do not require a separate `registry.json` pull request.
 
 ## Verification
 
