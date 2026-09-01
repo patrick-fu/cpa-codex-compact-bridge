@@ -41,8 +41,9 @@ gate:
 CPA_SOURCE_DIR=/path/to/CLIProxyAPI (cd integration && go test ./... -count=1)
 ```
 
-The integration suite is run on linux/amd64. Other platforms are not covered by
-CI and are considered experimental.
+The full CPA integration suite is run on linux/amd64. Release CI also builds
+and ABI-smoke-tests linux/amd64 plus macOS arm64 and amd64 libraries; macOS does
+not run the full CPA integration suite. Windows is not covered by CI.
 
 ## Project layout
 
@@ -85,19 +86,16 @@ Prebuilt binaries will be published on [GitHub Releases](https://github.com/patr
    `pluginVersion` in `plugin/main.go` to `X.Y.Z` so source builds stay
    accurate, then push the new tag. The workflow validates the tag and injects
    the same version into release metadata. Do not retarget or reuse a tag.
-2. **CI** builds `c-shared` for linux/amd64, packages it as
-   `cpa-codex-compact-bridge_X.Y.Z_linux_amd64.zip` (single root-level `.so`),
-   and generates a `checksums.txt` in sha256sum format.
-3. **GitHub Release**: create a release from the tag with the zip and
-   `checksums.txt`. Other platforms are experimental and not included in the
-   release matrix.
-4. **CPA Plugin Store submission** (separate step, not part of the release
-   workflow): open a PR against
-   [CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)
-   adding one entry to `registry.json`. Include the release tag, evidence that
-   the zip and `checksums.txt` exist, and a short capability summary. See the
-   [research report](docs/research/cpa-plugin-store-publication.md) for
-   submission details and review expectations.
+2. **CI** builds `c-shared` archives for linux/amd64, macOS/arm64, and
+   macOS/amd64. Every archive has a single root-level shared library; the final
+   publish job writes all three archive hashes to one sha256sum-format
+   `checksums.txt`. Full CPA integration remains linux/amd64-only; macOS runs
+   build and ABI smoke checks. Windows is not covered.
+3. **GitHub Release**: create or refresh the release from the tag with all
+   three zips and `checksums.txt`.
+4. **CPA Plugin Store**: the plugin is listed through Store PR #80. Store
+   releases read the latest GitHub Release automatically, so normal releases do
+   not require a per-version `registry.json` PR.
 
 ## Scope
 

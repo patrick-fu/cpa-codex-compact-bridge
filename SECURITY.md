@@ -2,11 +2,13 @@
 
 ## Supported versions
 
-Security fixes target the current stable **v0.1.3** release. CI builds
-linux/amd64 against the CLIProxyAPI **v7.2.120** SDK and runs the real
-integration suite against exact CLIProxyAPI **v7.2.125** source. Other
-CLIProxyAPI versions, operating systems, and CPU architectures are not verified
-and may receive no fixes.
+Security fixes target the current stable **v0.1.3** release. Its macOS/arm64
+and macOS/amd64 archives received local build and ABI smoke coverage, including
+an amd64 load test under Rosetta; release CI automates the same checks for
+future tags. CI runs the real integration suite only on linux/amd64 against
+exact CLIProxyAPI **v7.2.125** source (the plugin SDK is **v7.2.120**).
+Windows, other CLIProxyAPI versions, and platforms outside that release matrix
+are not verified and may receive no fixes.
 
 ## Reporting a vulnerability
 
