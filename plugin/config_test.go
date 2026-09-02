@@ -72,6 +72,13 @@ summary_image_models: ["vision-*"]
 	}
 }
 
+func TestLoadConfigAcceptsMaximumSummaryTokens(t *testing.T) {
+	cfg, err := loadConfig([]byte("max_summary_tokens: 100000\n"))
+	if err != nil || cfg.MaxSummaryTokens != maxAllowedSummaryTokens {
+		t.Fatalf("load maximum summary tokens = %+v, %v", cfg, err)
+	}
+}
+
 func TestLoadConfigRejectsInvalidSummarySettings(t *testing.T) {
 	cases := []string{
 		"max_summary_tokens: 100001\n",

@@ -124,6 +124,18 @@ func TestSummaryRequestUsesCodexLocalCompactPrompt(t *testing.T) {
 	if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != "user" || request.Messages[len(request.Messages)-1].Content != "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.\nDo not answer the user. Do not call tools. Output only the continuation summary." {
 		t.Fatalf("summary request did not use the Codex local compact prompt: messages=%+v body=%s", request.Messages, calls[0].Body)
 	}
+	var translated map[string]json.RawMessage
+	if err := json.Unmarshal(calls[0].Body, &translated); err != nil {
+		t.Fatalf("decode translated summary request: %v", err)
+	}
+	if string(translated["stream"]) != "false" || len(translated["max_tokens"]) == 0 {
+		t.Fatalf("summary request did not preserve non-stream token cap: %s", calls[0].Body)
+	}
+	for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+		if _, ok := translated[field]; ok {
+			t.Fatalf("CPA forwarded tool configuration %q from summary request: %s", field, calls[0].Body)
+		}
+	}
 }
 
 func (f *fakeUpstream) reset() {
@@ -835,6 +847,9 @@ func TestBlankSummaryIsRuntimeCompactionFailure(t *testing.T) {
 		switch eventType(event) {
 		case "response.failed":
 			failed = true
+			if stringField(event, "response.error.code") != bridgeErrCode {
+				t.Fatalf("V2 blank summary error code = %q, want %q: %s", stringField(event, "response.error.code"), bridgeErrCode, event)
+			}
 		case "response.completed":
 			completed = true
 		case "response.output_item.done":

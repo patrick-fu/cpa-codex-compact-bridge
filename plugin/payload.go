@@ -132,11 +132,20 @@ func extractAssistantText(body []byte) (string, error) {
 	if hasOutput && hasChoices {
 		return "", summaryFailure("summary response has multiple terminal shapes")
 	}
-	if hasOutput && isJSONArray(output) {
+	if hasOutput {
+		if !isJSONArray(output) {
+			return "", summaryFailure("summary response has unknown terminal shape")
+		}
 		return extractResponsesAssistantText(envelope)
 	}
-	if hasChoices && isJSONArray(choices) {
+	if hasChoices {
+		if !isJSONArray(choices) {
+			return "", summaryFailure("summary response has unknown terminal shape")
+		}
 		return extractChatAssistantText(envelope)
+	}
+	if _, hasStatus := envelope["status"]; hasStatus {
+		return extractResponsesAssistantText(envelope)
 	}
 	return "", summaryFailure("summary response has unknown terminal shape")
 }
@@ -146,49 +155,47 @@ func isJSONArray(raw json.RawMessage) bool {
 	return len(trimmed) > 0 && trimmed[0] == '['
 }
 
+type responseOutputContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type responseOutputItem struct {
+	Type    string                  `json:"type"`
+	Role    string                  `json:"role"`
+	Content []responseOutputContent `json:"content"`
+}
+
 func extractResponsesAssistantText(envelope map[string]json.RawMessage) (string, error) {
-	var response struct {
-		Output []struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
+	var output []responseOutputItem
+	if raw, ok := envelope["output"]; ok {
+		if err := json.Unmarshal(raw, &output); err != nil {
+			return "", err
+		}
 	}
-	if err := json.Unmarshal(envelope["output"], &response.Output); err != nil {
-		return "", err
-	}
-	status, hasStatus, err := responseStatus(envelope)
+	status, err := responseStatus(envelope)
 	if err != nil {
 		return "", err
 	}
-	if hasStatus && status != "completed" {
-		if status == "failed" {
-			return "", summaryFailure("summary upstream failed (status=%s)", status)
-		}
-		if reason := incompleteReason(envelope); reason != "" {
-			return "", summaryFailure("summary upstream incomplete (reason=%s)", reason)
-		}
-		return "", summaryFailure("summary upstream incomplete (status=%s)", status)
+	if err := responseOutputItemFailure(output); err != nil {
+		return "", err
 	}
-	if responseContainsToolCall(response.Output) {
-		return "", summaryFailure("summary upstream returned tool call")
+	if status == "failed" {
+		return "", summaryFailure("summary upstream failed (status=failed)")
 	}
-	if reason := incompleteReason(envelope); reason != "" {
-		return "", summaryFailure("summary upstream incomplete (reason=%s)", reason)
+	if status == "incomplete" {
+		return "", incompleteResponseFailure(envelope)
 	}
 	if hasJSONValue(envelope["incomplete_details"]) {
-		return "", summaryFailure("summary upstream incomplete (reason=unknown)")
+		return "", incompleteResponseFailure(envelope)
 	}
 	var text strings.Builder
-	for _, output := range response.Output {
-		if output.Role != "assistant" {
+	for _, item := range output {
+		if item.Type != "message" || item.Role != "assistant" {
 			continue
 		}
-		for _, content := range output.Content {
-			if content.Type == "output_text" && content.Text != "" {
+		for _, content := range item.Content {
+			if (content.Type == "output_text" || content.Type == "text") && content.Text != "" {
 				text.WriteString(content.Text)
 			}
 		}
@@ -196,64 +203,43 @@ func extractResponsesAssistantText(envelope map[string]json.RawMessage) (string,
 	if text.Len() > 0 {
 		return text.String(), nil
 	}
-	if responseContainsReasoning(response.Output) {
-		return "", summaryFailure("summary model produced no usable text")
-	}
-	if !hasStatus {
-		return "", summaryFailure("summary text missing terminal status")
-	}
 	return "", summaryFailure("summary model produced no usable text")
 }
 
-func responseStatus(envelope map[string]json.RawMessage) (string, bool, error) {
+func responseStatus(envelope map[string]json.RawMessage) (string, error) {
 	raw, ok := envelope["status"]
 	if !ok || string(raw) == "null" {
-		return "", false, nil
+		return "", summaryFailure("summary upstream invalid terminal status")
 	}
 	var status string
 	if err := json.Unmarshal(raw, &status); err != nil {
-		return "", false, summaryFailure("summary upstream incomplete (status=invalid)")
+		return "", summaryFailure("summary upstream invalid terminal status")
 	}
-	return status, true, nil
+	switch status {
+	case "completed", "incomplete", "failed":
+		return status, nil
+	default:
+		return "", summaryFailure("summary upstream invalid terminal status")
+	}
 }
 
-func responseContainsToolCall(output []struct {
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-}) bool {
+func responseOutputItemFailure(output []responseOutputItem) error {
 	for _, item := range output {
 		switch item.Type {
-		case "function_call", "custom_tool_call", "tool_call", "function_call_output":
-			return true
+		case "message", "reasoning":
+		case "function_call", "custom_tool_call", "tool_call", "function_call_output", "computer_call", "mcp_call", "web_search_call", "file_search_call", "code_interpreter_call":
+			return summaryFailure("summary upstream returned tool call")
+		default:
+			return summaryFailure("summary upstream returned unsupported output item")
 		}
 		for _, content := range item.Content {
 			switch content.Type {
 			case "function_call", "custom_tool_call", "tool_call", "function_call_output":
-				return true
+				return summaryFailure("summary upstream returned tool call")
 			}
 		}
 	}
-	return false
-}
-
-func responseContainsReasoning(output []struct {
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-}) bool {
-	for _, item := range output {
-		if item.Type == "reasoning" {
-			return true
-		}
-	}
-	return false
+	return nil
 }
 
 func extractChatAssistantText(envelope map[string]json.RawMessage) (string, error) {
@@ -284,8 +270,10 @@ func extractChatAssistantText(envelope map[string]json.RawMessage) (string, erro
 		return "", summaryFailure("summary upstream truncated (finish_reason=max_tokens)")
 	case "tool_calls":
 		return "", summaryFailure("summary upstream returned tool call")
+	case "content_filter":
+		return "", summaryFailure("summary upstream incomplete (finish_reason=content_filter)")
 	default:
-		return "", summaryFailure("summary upstream incomplete (finish_reason=%s)", *choice.FinishReason)
+		return "", summaryFailure("summary upstream invalid terminal status")
 	}
 	if hasJSONValue(choice.Message.ToolCalls) {
 		return "", summaryFailure("summary upstream returned tool call")
@@ -305,18 +293,23 @@ func hasJSONValue(raw json.RawMessage) bool {
 	return trimmed != "" && trimmed != "null" && trimmed != "[]"
 }
 
-func incompleteReason(envelope map[string]json.RawMessage) string {
+func incompleteResponseFailure(envelope map[string]json.RawMessage) error {
 	raw, ok := envelope["incomplete_details"]
 	if !ok || !hasJSONValue(raw) {
-		return ""
+		return summaryFailure("summary upstream incomplete")
 	}
 	var details struct {
 		Reason string `json:"reason"`
 	}
-	if err := json.Unmarshal(raw, &details); err != nil || details.Reason == "" {
-		return ""
+	if err := json.Unmarshal(raw, &details); err != nil {
+		return summaryFailure("summary upstream incomplete")
 	}
-	return details.Reason
+	switch details.Reason {
+	case "max_output_tokens", "content_filter":
+		return summaryFailure("summary upstream incomplete (reason=%s)", details.Reason)
+	default:
+		return summaryFailure("summary upstream incomplete")
+	}
 }
 
 func summaryFailure(format string, args ...any) *pluginErr {

@@ -382,8 +382,8 @@ func TestV2SSEEventsNoPartial(t *testing.T) {
 // it stays a retryable runtime failure instead of a client error.
 func TestExtractSummaryTextRejectsBlankSummary(t *testing.T) {
 	for name, body := range map[string][]byte{
-		"Responses whitespace output": []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  \n "}]}]}`),
-		"Chat whitespace content":     []byte(`{"choices":[{"message":{"content":" \t "}}]}`),
+		"Responses whitespace output": []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"  \n "}]}]}`),
+		"Chat whitespace content":     []byte(`{"choices":[{"message":{"content":" \t "},"finish_reason":"stop"}]}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			text, err := extractSummaryText(body)
@@ -398,7 +398,7 @@ func TestExtractSummaryTextRejectsBlankSummary(t *testing.T) {
 		body []byte
 		want string
 	}{
-		{"Responses", []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  kept summary  "}]}]}`), "kept summary"},
+		{"Responses", []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"  kept summary  "}]}]}`), "kept summary"},
 		{"Chat", []byte(`{"choices":[{"message":{"content":"chat summary"},"finish_reason":"stop"}]}`), "chat summary"},
 	}
 	for _, tt := range usable {
@@ -426,7 +426,7 @@ func TestV2CompactionItemJSONRejectsBlankSummary(t *testing.T) {
 }
 
 func TestExtractAssistantTextResponses(t *testing.T) {
-	body := []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}]}`)
+	body := []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}]}`)
 	text, err := extractAssistantText(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -437,7 +437,7 @@ func TestExtractAssistantTextResponses(t *testing.T) {
 }
 
 func TestExtractAssistantTextResponsesConcatenatesOutputTextParts(t *testing.T) {
-	body := []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"first "},{"type":"refusal","text":"ignored"},{"type":"output_text","text":"second"}]}]}`)
+	body := []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first "},{"type":"refusal","text":"ignored"},{"type":"output_text","text":"second"}]}]}`)
 	text, err := extractAssistantText(body)
 	if err != nil {
 		t.Fatalf("extract Responses text: %v", err)
@@ -459,7 +459,7 @@ func TestExtractAssistantTextChat(t *testing.T) {
 }
 
 func TestExtractAssistantTextEmpty(t *testing.T) {
-	body := []byte(`{"output":[]}`)
+	body := []byte(`{"status":"completed","output":[]}`)
 	_, err := extractAssistantText(body)
 	if err == nil {
 		t.Fatal("expected error for empty output")
@@ -469,8 +469,8 @@ func TestExtractAssistantTextEmpty(t *testing.T) {
 func TestExtractAssistantTextRejectsMalformedAndEmptyVariants(t *testing.T) {
 	for name, body := range map[string][]byte{
 		"malformed JSON":           []byte(`{"output":`),
-		"no output text":           []byte(`{"output":[{"role":"assistant","content":[{"type":"refusal","text":"no"}]}]}`),
-		"empty Responses text":     []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":""}]}]}`),
+		"no output text":           []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","text":"no"}]}]}`),
+		"empty Responses text":     []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}]}`),
 		"empty Chat choices":       []byte(`{"choices":[]}`),
 		"empty Chat message":       []byte(`{"choices":[{"message":{"content":""}}]}`),
 		"unrelated valid response": []byte(`{"status":"ok"}`),
@@ -500,20 +500,27 @@ func TestExtractSummaryTextCompletionStates(t *testing.T) {
 		{"responses completed", []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "summary", ""},
 		{"responses incomplete", []byte(`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream incomplete (reason=max_output_tokens)"},
 		{"responses failed", []byte(`{"status":"failed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream failed (status=failed)"},
-		{"responses missing status with output text", []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "summary", ""},
-		{"responses missing status with only tool call", []byte(`{"output":[{"type":"function_call","name":"search","arguments":"{}"}]}`), "", "summary upstream returned tool call"},
+		{"responses unknown status is sanitized", []byte(`{"status":"<arbitrary>","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream invalid terminal status"},
+		{"responses missing status with output text", []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream invalid terminal status"},
+		{"responses null status with output text", []byte(`{"status":null,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream invalid terminal status"},
+		{"responses missing status with only tool call", []byte(`{"output":[{"type":"function_call","name":"search","arguments":"{}"}]}`), "", "summary upstream invalid terminal status"},
 		{"responses completed with translated tool call", []byte(`{"status":"completed","output":[{"type":"function_call","name":"search","arguments":"{}"}]}`), "", "summary upstream returned tool call"},
+		{"responses completed with computer call", []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]},{"type":"computer_call","id":"call_1"}]}`), "", "summary upstream returned tool call"},
+		{"responses completed with mcp call", []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]},{"type":"mcp_call","id":"call_1"}]}`), "", "summary upstream returned tool call"},
+		{"responses completed with unknown item", []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]},{"type":"future_call"}]}`), "", "summary upstream returned unsupported output item"},
 		{"qwen tool-call fixture", qwenToolCall, "", "summary upstream returned tool call"},
 		{"responses reasoning has no text fallback", []byte(`{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"hidden"}]}]}`), "", "summary model produced no usable text"},
 		{"responses incomplete details", []byte(`{"status":"completed","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream incomplete (reason=max_output_tokens)"},
 		{"ambiguous response shapes", []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}],"choices":[{"message":{"content":"summary"},"finish_reason":"length"}]}`), "", "summary response has multiple terminal shapes"},
-		{"unknown response shape", []byte(`{"status":"completed"}`), "", "summary response has unknown terminal shape"},
+		{"completed response with no output", []byte(`{"status":"completed"}`), "", "summary model produced no usable text"},
 		{"chat stop", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"stop"}]}`), "summary", ""},
 		{"chat length", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"length"}]}`), "", "summary upstream truncated (finish_reason=length)"},
 		{"chat max tokens", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"max_tokens"}]}`), "", "summary upstream truncated (finish_reason=max_tokens)"},
 		{"chat tool calls", []byte(`{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1"}]},"finish_reason":"tool_calls"}]}`), "", "summary upstream returned tool call"},
 		{"chat content filter", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"content_filter"}]}`), "", "summary upstream incomplete (finish_reason=content_filter)"},
 		{"chat missing finish reason", []byte(`{"choices":[{"message":{"content":"summary"}}]}`), "", "summary text missing terminal status"},
+		{"unknown incomplete reason is sanitized", []byte(`{"status":"incomplete","incomplete_details":{"reason":"<arbitrary>"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream incomplete"},
+		{"unknown chat finish reason is sanitized", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"<arbitrary>"}]}`), "", "summary upstream invalid terminal status"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -533,16 +540,16 @@ func TestExtractSummaryTextCompletionStates(t *testing.T) {
 }
 
 func TestFinalSummaryIsTrimmedAndBounded(t *testing.T) {
-	text, err := extractSummaryText([]byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  1234  "}]}]}`))
+	text, err := extractSummaryText([]byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"  1234  "}]}]}`))
 	if err != nil || text != "1234" {
 		t.Fatalf("final summary = %q, %v", text, err)
 	}
 	cfg := defaultConfig()
 	cfg.MaxSummaryBytes = 4
-	if err := validateSummarySize(text, cfg.summaryMaxBytes()); err != nil {
+	if err := validateSummarySize(text, cfg.MaxSummaryBytes); err != nil {
 		t.Fatalf("summary at configured byte limit rejected: %v", err)
 	}
-	err = validateSummarySize("12345", cfg.summaryMaxBytes())
+	err = validateSummarySize("12345", cfg.MaxSummaryBytes)
 	pluginErrValue := mustPluginErr(t, err, errCodeCompactBridgeFailed)
 	if pluginErrValue.Message != "summary exceeds 4 bytes" {
 		t.Fatalf("summary size error = %+v", pluginErrValue)
@@ -751,7 +758,7 @@ func TestBuildSummaryRequestBodyDoesNotForwardServiceTierByDefault(t *testing.T)
 }
 
 func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
-	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":{"url":"data:image/png;base64,AA==","detail":"low"},"summary":"s"}]}`)}
+	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","summary":"s","content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":{"url":"data:image/png;base64,AA==","detail":"low"}}]}`)}
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"input":[]}`)
 	for _, tc := range []struct {
@@ -760,6 +767,7 @@ func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
 		wantImage   bool
 	}{
 		{name: "default strips images"},
+		{name: "nonmatching allowlist strips images", imageModels: []string{"other-vision-*"}},
 		{name: "allowlisted summary model retains images", imageModels: []string{"vision-*"}, wantImage: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -783,13 +791,14 @@ func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
 					t.Fatalf("decode image-filtered request: %v", err)
 				}
 				var message struct {
+					Summary json.RawMessage              `json:"summary"`
 					Content []map[string]json.RawMessage `json:"content"`
 				}
 				if err := json.Unmarshal(parsed.Input[0], &message); err != nil {
 					t.Fatalf("decode image message: %v", err)
 				}
 				image := message.Content[1]
-				if string(image["type"]) != `"input_text"` || string(image["summary"]) != `"s"` || string(image["detail"]) != `"low"` || image["image_url"] != nil || string(message.Content[0]["text"]) != `"before"` {
+				if string(image["type"]) != `"input_text"` || string(message.Summary) != `"s"` || string(image["detail"]) != `"low"` || image["image_url"] != nil || string(message.Content[0]["text"]) != `"before"` {
 					t.Fatalf("image filtering lost sibling fields: %s", body)
 				}
 			}

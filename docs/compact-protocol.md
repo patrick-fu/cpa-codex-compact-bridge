@@ -80,7 +80,7 @@ Two stable codes with different retry semantics. The Codex client treats HTTP 40
 
 The four state messages are fixed: a native item on a bridged target uses the message above; an unmatched target uses `native compaction state has no matching passthrough rule; add a passthrough rule for a compact-capable model or start a new session`; a request that mixes both kinds uses `request mixes bridged and native compaction state; start a new session`; and corrupt bridge state uses `bridged compaction state has no summary text; start a new session`.
 
-`compact_bridge_failed` stays the retryable runtime code for Summary Model generation, network, and upstream failures, and for a generated summary that is empty or whitespace-only:
+`compact_bridge_failed` stays the retryable runtime code for Summary Model generation, network, and upstream failures, including tool-call or unsupported output, incomplete or truncated terminal states, an empty or whitespace-only summary, and a summary exceeding the configured byte limit:
 
 - V1 returns HTTP 502 with a standard OpenAI error body and code `compact_bridge_failed`.
 - V2 emits `response.failed` with code `compact_bridge_failed`, then closes without `response.completed`.

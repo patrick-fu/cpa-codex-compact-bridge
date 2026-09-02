@@ -41,7 +41,12 @@ func normalizeInterceptedReplay(cfg Config, req pluginapi.RequestInterceptReques
 	result, err := normalizeCompactionState(req.Body, target)
 	if err != nil {
 		if stateErr := asInvalidCompactionState(err); stateErr != nil {
-			return interceptedStateFailure(stateErr)
+			return pluginapi.RequestInterceptResponse{
+				Terminate:       true,
+				StatusCode:      stateErr.HTTPStatus,
+				ResponseHeaders: jsonHeaders(),
+				ResponseBody:    errorBody(stateErr.Code, stateErr.Message, "invalid_request_error"),
+			}
 		}
 		return pluginapi.RequestInterceptResponse{
 			Terminate:       true,
@@ -54,15 +59,6 @@ func normalizeInterceptedReplay(cfg Config, req pluginapi.RequestInterceptReques
 		return pluginapi.RequestInterceptResponse{}
 	}
 	return pluginapi.RequestInterceptResponse{Body: result.Body}
-}
-
-func interceptedStateFailure(stateErr *pluginErr) pluginapi.RequestInterceptResponse {
-	return pluginapi.RequestInterceptResponse{
-		Terminate:       true,
-		StatusCode:      stateErr.HTTPStatus,
-		ResponseHeaders: jsonHeaders(),
-		ResponseBody:    errorBody(stateErr.Code, stateErr.Message, "invalid_request_error"),
-	}
 }
 
 // compactBridgeFailureBody is the retryable runtime failure returned when the

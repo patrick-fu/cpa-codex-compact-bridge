@@ -355,7 +355,7 @@ func executeOrdinaryBridged(req rpcExecutorRequest, stream bool) ([]byte, error)
 		if stateErr := asInvalidCompactionState(err); stateErr != nil {
 			return nil, stateErr
 		}
-		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: err.Error(), HTTPStatus: 502}
+		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: "bridged compaction failed", HTTPStatus: 502}
 	}
 	req.OriginalRequest = result.Body
 	return delegateOrdinary(req, stream)
@@ -375,7 +375,7 @@ func delegateOrdinary(req rpcExecutorRequest, stream bool) ([]byte, error) {
 		HostCallbackID: req.HostCallbackID,
 	})
 	if err != nil {
-		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: err.Error(), HTTPStatus: 502}
+		return nil, &pluginErr{Code: errCodeCompactBridgeFailed, Message: "bridged compaction failed", HTTPStatus: 502}
 	}
 	return okEnvelope(map[string]any{
 		"Payload":  resp.Body,
@@ -424,7 +424,7 @@ func generateSummary(cfg Config, req rpcExecutorRequest, summaryModel, hostCallb
 	if err != nil {
 		return "", err
 	}
-	if err := validateSummarySize(summary, cfg.summaryMaxBytes()); err != nil {
+	if err := validateSummarySize(summary, cfg.MaxSummaryBytes); err != nil {
 		return "", err
 	}
 	return summary, nil
@@ -490,7 +490,7 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 		"input":               inputEncoded,
 		"tools":               json.RawMessage("[]"),
 		"parallel_tool_calls": jsonRawFalse(),
-		"max_output_tokens":   jsonRawInt(cfg.summaryMaxTokens()),
+		"max_output_tokens":   jsonRawInt(cfg.MaxSummaryTokens),
 		"stream":              jsonRawFalse(),
 	}
 	if instructions, ok := parsed["instructions"]; ok {
@@ -509,20 +509,6 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 		return nil, fmtSummaryBody(err)
 	}
 	return out, nil
-}
-
-func (cfg Config) summaryMaxTokens() int {
-	if cfg.MaxSummaryTokens <= 0 {
-		return defaultMaxSummaryTokens
-	}
-	return cfg.MaxSummaryTokens
-}
-
-func (cfg Config) summaryMaxBytes() int {
-	if cfg.MaxSummaryBytes <= 0 {
-		return defaultMaxSummaryBytes
-	}
-	return cfg.MaxSummaryBytes
 }
 
 func validateSummarySize(summary string, maxBytes int) error {
