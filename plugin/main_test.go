@@ -308,6 +308,11 @@ func TestHandleRequestInterceptBeforeStateFailClosed(t *testing.T) {
 			body:  `{"input":[{"type":"compaction","id":"cpa_compact_abc","encrypted_content":"summary"},{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"}]}`,
 			want:  msgMixedCompactionState,
 		},
+		"V2 native continuation on bridge target": {
+			model: "bridge-test",
+			body:  `{"stream":true,"input":[{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"},{"type":"compaction_trigger"}]}`,
+			want:  msgNativeCompactionOnBridge,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -497,6 +502,27 @@ func TestHandleExecuteCompactGenerationStateFailsClosedBeforeSummary(t *testing.
 			t.Fatalf("V2 state error must not produce a stream, got raw=%s err=%+v", raw, pluginErrValue)
 		}
 	})
+	t.Run("V2 native continuation", func(t *testing.T) {
+		raw, err := handleMethod(pluginabi.MethodExecutorExecuteStream, executorRequestJSON(t, rpcExecutorRequest{
+			ExecutorRequest: pluginapi.ExecutorRequest{
+				Model:           "bridge-test",
+				Stream:          true,
+				OriginalRequest: []byte(`{"model":"bridge-test","stream":true,"input":[{"type":"compaction","id":"cmp_native","encrypted_content":"opaque"},{"type":"compaction_trigger"}]}`),
+			},
+		}))
+		pluginErrValue := mustPluginErr(t, err, errCodeInvalidCompactionState)
+		if raw != nil || pluginErrValue.HTTPStatus != http.StatusBadRequest || pluginErrValue.Message != msgNativeCompactionOnBridge {
+			t.Fatalf("V2 native continuation must not produce a stream, got raw=%s err=%+v", raw, pluginErrValue)
+		}
+	})
+}
+
+func TestCompactExecutionErrorPreservesStateFailure(t *testing.T) {
+	state := invalidCompactionStateError(msgNativeCompactionOnBridge)
+	got := compactExecutionError(state)
+	if got != state || got.Code != errCodeInvalidCompactionState || got.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("state failure changed at compact boundary: got %+v", got)
+	}
 }
 func TestHandleExecuteV1HostFailureReturnsStablePluginError(t *testing.T) {
 	installTestConfig(t, "rules:\n  - match: 'bridge-*'\n    action: bridge\n")

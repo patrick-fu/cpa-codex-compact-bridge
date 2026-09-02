@@ -34,6 +34,7 @@ func compactFuzzBodies() [][]byte {
 		[]byte(`{"model":"bridge-test","input":[{"type":"compaction","id":"cpa_compact_seed","encrypted_content":"summary"}]}`),
 		[]byte(`{"model":"bridge-test","input":[{"type":"compaction","id":"opaque_seed","encrypted_content":"opaque"}]}`),
 		[]byte(`{"model":"bridge-test","input":[{"type":"compaction_trigger"}]}`),
+		[]byte(`{"model":"bridge-test","stream":true,"input":[{"type":"message","role":"user","content":"compact this"},{"type":"compaction_trigger"}]}`),
 	}
 }
 

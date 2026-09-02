@@ -41,8 +41,18 @@ on_no_match: passthrough
 	if cfg.Rules[0].SummaryModel != "glm-5.2" {
 		t.Fatalf("rule0 summary = %q", cfg.Rules[0].SummaryModel)
 	}
-	if cfg.CompactPrompt != "Preserve exact task state." || !cfg.AppendToolGuard {
+	if cfg.CompactPrompt != "Preserve exact task state." || !cfg.compactPromptSet || !cfg.AppendToolGuard {
 		t.Fatalf("partial config lost defaults: %+v", cfg)
+	}
+}
+
+func TestLoadConfigTracksExplicitBlankCompactPrompt(t *testing.T) {
+	cfg, err := loadConfig([]byte("compact_prompt: ''\n"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.compactPromptSet || cfg.CompactPrompt != "" {
+		t.Fatalf("explicit blank prompt = %+v", cfg)
 	}
 }
 
@@ -52,12 +62,12 @@ max_summary_tokens: 4096
 max_summary_bytes: 65536
 append_tool_guard: false
 forward_service_tier: true
-summary_image_models: ["vision-summary"]
+summary_image_models: ["vision-*"]
 `))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.MaxSummaryTokens != 4096 || cfg.MaxSummaryBytes != 65536 || cfg.AppendToolGuard || !cfg.ForwardServiceTier || len(cfg.SummaryImageModels) != 1 || cfg.SummaryImageModels[0] != "vision-summary" {
+	if cfg.MaxSummaryTokens != 4096 || cfg.MaxSummaryBytes != 65536 || cfg.AppendToolGuard || !cfg.ForwardServiceTier || len(cfg.SummaryImageModels) != 1 || cfg.SummaryImageModels[0] != "vision-*" {
 		t.Fatalf("summary settings = %+v", cfg)
 	}
 }
@@ -68,6 +78,7 @@ func TestLoadConfigRejectsInvalidSummarySettings(t *testing.T) {
 		"max_summary_bytes: 0\n",
 		"max_summary_bytes: -1\n",
 		"summary_image_models: [\"\"]\n",
+		"summary_image_models: [\"[\"]\n",
 	}
 	for _, raw := range cases {
 		t.Run(raw, func(t *testing.T) {

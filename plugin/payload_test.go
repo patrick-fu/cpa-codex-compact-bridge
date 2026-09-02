@@ -398,7 +398,7 @@ func TestExtractSummaryTextRejectsBlankSummary(t *testing.T) {
 		body []byte
 		want string
 	}{
-		{"Responses", []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  kept summary  "}]}]}`), "  kept summary  "},
+		{"Responses", []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  kept summary  "}]}]}`), "kept summary"},
 		{"Chat", []byte(`{"choices":[{"message":{"content":"chat summary"},"finish_reason":"stop"}]}`), "chat summary"},
 	}
 	for _, tt := range usable {
@@ -506,8 +506,11 @@ func TestExtractSummaryTextCompletionStates(t *testing.T) {
 		{"qwen tool-call fixture", qwenToolCall, "", "summary upstream returned tool call"},
 		{"responses reasoning has no text fallback", []byte(`{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"hidden"}]}]}`), "", "summary model produced no usable text"},
 		{"responses incomplete details", []byte(`{"status":"completed","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream incomplete (reason=max_output_tokens)"},
+		{"ambiguous response shapes", []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}],"choices":[{"message":{"content":"summary"},"finish_reason":"length"}]}`), "", "summary response has multiple terminal shapes"},
+		{"unknown response shape", []byte(`{"status":"completed"}`), "", "summary response has unknown terminal shape"},
 		{"chat stop", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"stop"}]}`), "summary", ""},
 		{"chat length", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"length"}]}`), "", "summary upstream truncated (finish_reason=length)"},
+		{"chat max tokens", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"max_tokens"}]}`), "", "summary upstream truncated (finish_reason=max_tokens)"},
 		{"chat tool calls", []byte(`{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1"}]},"finish_reason":"tool_calls"}]}`), "", "summary upstream returned tool call"},
 		{"chat content filter", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"content_filter"}]}`), "", "summary upstream incomplete (finish_reason=content_filter)"},
 		{"chat missing finish reason", []byte(`{"choices":[{"message":{"content":"summary"}}]}`), "", "summary text missing terminal status"},
@@ -529,8 +532,17 @@ func TestExtractSummaryTextCompletionStates(t *testing.T) {
 	}
 }
 
-func TestValidateSummarySizeRejectsOversizedSummary(t *testing.T) {
-	err := validateSummarySize("12345", 4)
+func TestFinalSummaryIsTrimmedAndBounded(t *testing.T) {
+	text, err := extractSummaryText([]byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  1234  "}]}]}`))
+	if err != nil || text != "1234" {
+		t.Fatalf("final summary = %q, %v", text, err)
+	}
+	cfg := defaultConfig()
+	cfg.MaxSummaryBytes = 4
+	if err := validateSummarySize(text, cfg.summaryMaxBytes()); err != nil {
+		t.Fatalf("summary at configured byte limit rejected: %v", err)
+	}
+	err = validateSummarySize("12345", cfg.summaryMaxBytes())
 	pluginErrValue := mustPluginErr(t, err, errCodeCompactBridgeFailed)
 	if pluginErrValue.Message != "summary exceeds 4 bytes" {
 		t.Fatalf("summary size error = %+v", pluginErrValue)
@@ -631,6 +643,29 @@ func TestBuildSummaryRequestBodyUsesConfiguredCompactPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildSummaryRequestBodyOmitsInstructionForExplicitBlankPrompt(t *testing.T) {
+	cfg, err := loadConfig([]byte("compact_prompt: ''\nappend_tool_guard: true\n"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	req := rpcExecutorRequest{}
+	req.OriginalRequest = []byte(`{"input":[]}`)
+	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":"history"}`)}
+	body, err := buildSummaryRequestBody(req, "summary-model", cleanInput, cfg)
+	if err != nil {
+		t.Fatalf("build summary request: %v", err)
+	}
+	var parsed struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode summary request: %v", err)
+	}
+	if len(parsed.Input) != 1 || strings.Contains(string(body), compactGuard) || strings.Contains(string(body), "CONTEXT CHECKPOINT COMPACTION") {
+		t.Fatalf("blank compact prompt added an instruction: %s", body)
+	}
+}
+
 func TestBuildSummaryRequestBodyUsesWhitelistAndPreservesAllowedFields(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{
@@ -683,6 +718,9 @@ func TestBuildSummaryRequestBodyUsesWhitelistAndPreservesAllowedFields(t *testin
 			t.Fatalf("whitelist leaked %q in %s", field, body)
 		}
 	}
+	if strings.Contains(string(body), `"tool_choice"`) {
+		t.Fatalf("summary request wire body leaked tool_choice: %s", body)
+	}
 	var input []struct {
 		Type    string `json:"type"`
 		Role    string `json:"role"`
@@ -713,7 +751,7 @@ func TestBuildSummaryRequestBodyDoesNotForwardServiceTierByDefault(t *testing.T)
 }
 
 func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
-	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}`)}
+	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":{"url":"data:image/png;base64,AA==","detail":"low"},"summary":"s"}]}`)}
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"input":[]}`)
 	for _, tc := range []struct {
@@ -722,7 +760,7 @@ func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
 		wantImage   bool
 	}{
 		{name: "default strips images"},
-		{name: "allowlisted summary model retains images", imageModels: []string{"vision-summary"}, wantImage: true},
+		{name: "allowlisted summary model retains images", imageModels: []string{"vision-*"}, wantImage: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := defaultConfig()
@@ -736,6 +774,24 @@ func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
 			}
 			if !tc.wantImage && !strings.Contains(string(body), "[image removed]") {
 				t.Fatalf("image was not replaced: %s", body)
+			}
+			if !tc.wantImage {
+				var parsed struct {
+					Input []json.RawMessage `json:"input"`
+				}
+				if err := json.Unmarshal(body, &parsed); err != nil {
+					t.Fatalf("decode image-filtered request: %v", err)
+				}
+				var message struct {
+					Content []map[string]json.RawMessage `json:"content"`
+				}
+				if err := json.Unmarshal(parsed.Input[0], &message); err != nil {
+					t.Fatalf("decode image message: %v", err)
+				}
+				image := message.Content[1]
+				if string(image["type"]) != `"input_text"` || string(image["summary"]) != `"s"` || string(image["detail"]) != `"low"` || image["image_url"] != nil || string(message.Content[0]["text"]) != `"before"` {
+					t.Fatalf("image filtering lost sibling fields: %s", body)
+				}
 			}
 		})
 	}

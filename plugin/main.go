@@ -282,16 +282,7 @@ func executeV1Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 	summaryModel := pickSummaryModel(req, decision)
 	summary, err := generateSummary(cfg, req, summaryModel, req.HostCallbackID)
 	if err != nil {
-		// A state error is deterministic: report it as a client error instead of
-		// the retryable runtime failure.
-		if stateErr := asInvalidCompactionState(err); stateErr != nil {
-			return nil, stateErr
-		}
-		return nil, &pluginErr{
-			Code:       errCodeCompactBridgeFailed,
-			Message:    compactFailureMessage(err),
-			HTTPStatus: 502,
-		}
+		return nil, compactExecutionError(err)
 	}
 	itemID := compactionIDPrefix + uuid.NewString()
 	body, err := v1CompactResponseBody(items, itemID, summary)
@@ -309,13 +300,14 @@ func executeV2Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 	summaryModel := pickSummaryModel(req, decision)
 	summary, err := generateSummary(cfg, req, summaryModel, req.HostCallbackID)
 	if err != nil {
+		failure := compactExecutionError(err)
 		// Unreadable state never resolves on retry, so reject with a client error
 		// before any SSE frame instead of an in-band response.failed.
-		if stateErr := asInvalidCompactionState(err); stateErr != nil {
-			return nil, stateErr
+		if failure.Code == errCodeInvalidCompactionState {
+			return nil, failure
 		}
 		// V2 runtime failure: emit response.failed (no partial, no completed).
-		failed := v2ResponseFailedSSE(compactFailureMessage(err))
+		failed := v2ResponseFailedSSE(failure.Message)
 		return okEnvelope(map[string]any{
 			"Headers": map[string][]string{"content-type": {"text/event-stream"}},
 			"Chunks":  []map[string]any{{"Payload": failed}},
@@ -342,6 +334,17 @@ func compactFailureMessage(err error) string {
 		return summaryErr.Message
 	}
 	return "bridged compaction failed"
+}
+
+func compactExecutionError(err error) *pluginErr {
+	if stateErr := asInvalidCompactionState(err); stateErr != nil {
+		return stateErr
+	}
+	return &pluginErr{
+		Code:       errCodeCompactBridgeFailed,
+		Message:    compactFailureMessage(err),
+		HTTPStatus: http.StatusBadGateway,
+	}
 }
 
 // executeOrdinaryBridged applies the compaction state policy for a bridged
@@ -458,24 +461,26 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 		return nil, fmtSummaryBody(err)
 	}
 	compactPrompt := codexLocalCompactPrompt
-	if strings.TrimSpace(cfg.CompactPrompt) != "" {
+	if cfg.compactPromptSet || strings.TrimSpace(cfg.CompactPrompt) != "" {
 		compactPrompt = cfg.CompactPrompt
 	}
-	if cfg.AppendToolGuard {
-		if !strings.HasSuffix(compactPrompt, "\n") {
-			compactPrompt += "\n"
+	if strings.TrimSpace(compactPrompt) != "" {
+		if cfg.AppendToolGuard {
+			if !strings.HasSuffix(compactPrompt, "\n") {
+				compactPrompt += "\n"
+			}
+			compactPrompt += compactGuard
 		}
-		compactPrompt += compactGuard
+		compactInstruction, err := json.Marshal(map[string]any{
+			"type":    "message",
+			"role":    "user",
+			"content": compactPrompt,
+		})
+		if err != nil {
+			return nil, fmtSummaryBody(err)
+		}
+		filteredInput = append(filteredInput, compactInstruction)
 	}
-	compactInstruction, err := json.Marshal(map[string]any{
-		"type":    "message",
-		"role":    "user",
-		"content": compactPrompt,
-	})
-	if err != nil {
-		return nil, fmtSummaryBody(err)
-	}
-	filteredInput = append(filteredInput, compactInstruction)
 	inputEncoded, err := json.Marshal(filteredInput)
 	if err != nil {
 		return nil, fmtSummaryBody(err)
@@ -549,19 +554,28 @@ func stripSummaryInputImages(items []json.RawMessage, summaryModel string, image
 		}
 		changed := false
 		for i, part := range parts {
-			var contentPart struct {
-				Type string `json:"type"`
-			}
+			var contentPart map[string]json.RawMessage
 			if err := json.Unmarshal(part, &contentPart); err != nil {
 				return nil, err
 			}
-			if contentPart.Type != "input_image" {
+			var partType string
+			if err := json.Unmarshal(contentPart["type"], &partType); err != nil || partType != "input_image" {
 				continue
 			}
-			replacement, err := json.Marshal(map[string]string{
-				"type": "input_text",
-				"text": "[image removed]",
-			})
+			if imageURL, ok := contentPart["image_url"]; ok {
+				var imageURLFields map[string]json.RawMessage
+				if err := json.Unmarshal(imageURL, &imageURLFields); err == nil {
+					if _, hasDetail := contentPart["detail"]; !hasDetail {
+						if detail, ok := imageURLFields["detail"]; ok {
+							contentPart["detail"] = detail
+						}
+					}
+				}
+			}
+			delete(contentPart, "image_url")
+			contentPart["type"] = jsonRawString("input_text")
+			contentPart["text"] = jsonRawString("[image removed]")
+			replacement, err := json.Marshal(contentPart)
 			if err != nil {
 				return nil, err
 			}
@@ -588,7 +602,7 @@ func stripSummaryInputImages(items []json.RawMessage, summaryModel string, image
 
 func summaryModelAllowsImages(summaryModel string, imageModels []string) bool {
 	for _, model := range imageModels {
-		if model == summaryModel {
+		if globMatch(model, summaryModel) {
 			return true
 		}
 	}

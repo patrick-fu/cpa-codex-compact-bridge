@@ -127,13 +127,23 @@ func extractAssistantText(body []byte) (string, error) {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return "", err
 	}
-	if _, ok := envelope["output"]; ok {
+	output, hasOutput := envelope["output"]
+	choices, hasChoices := envelope["choices"]
+	if hasOutput && hasChoices {
+		return "", summaryFailure("summary response has multiple terminal shapes")
+	}
+	if hasOutput && isJSONArray(output) {
 		return extractResponsesAssistantText(envelope)
 	}
-	if _, ok := envelope["choices"]; ok {
+	if hasChoices && isJSONArray(choices) {
 		return extractChatAssistantText(envelope)
 	}
-	return "", fmt.Errorf("no assistant text found in summary model response")
+	return "", summaryFailure("summary response has unknown terminal shape")
+}
+
+func isJSONArray(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return len(trimmed) > 0 && trimmed[0] == '['
 }
 
 func extractResponsesAssistantText(envelope map[string]json.RawMessage) (string, error) {
@@ -270,6 +280,8 @@ func extractChatAssistantText(envelope map[string]json.RawMessage) (string, erro
 	case "stop":
 	case "length":
 		return "", summaryFailure("summary upstream truncated (finish_reason=length)")
+	case "max_tokens":
+		return "", summaryFailure("summary upstream truncated (finish_reason=max_tokens)")
 	case "tool_calls":
 		return "", summaryFailure("summary upstream returned tool call")
 	default:
@@ -323,7 +335,8 @@ func extractSummaryText(body []byte) (string, error) {
 		}
 		return "", summaryFailure("summary model produced no usable text")
 	}
-	if strings.TrimSpace(text) == "" {
+	text = strings.TrimSpace(text)
+	if text == "" {
 		return "", summaryFailure("summary model produced no usable text")
 	}
 	return text, nil

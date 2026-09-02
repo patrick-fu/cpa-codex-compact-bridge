@@ -87,4 +87,4 @@ The four state messages are fixed: a native item on a bridged target uses the me
 
 A blank generated summary never becomes a compaction item; the facade sends no partial compact result at all.
 
-Failure messages are stable and sanitized; they do not expose upstream credentials or raw provider bodies.
+Failure messages are stable and sanitized. Runtime failures expose a structural reason such as an incomplete terminal state, a tool call, or unusable text, but never upstream credentials, raw provider bodies, or model-generated summary text.

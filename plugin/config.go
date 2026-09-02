@@ -35,6 +35,7 @@ type Config struct {
 	AppendToolGuard    bool     `yaml:"append_tool_guard"`
 	ForwardServiceTier bool     `yaml:"forward_service_tier"`
 	SummaryImageModels []string `yaml:"summary_image_models"`
+	compactPromptSet   bool
 }
 
 const (
@@ -53,6 +54,13 @@ func loadConfig(raw []byte) (Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode plugin config: %w", err)
 	}
+	var promptPresence struct {
+		CompactPrompt *string `yaml:"compact_prompt"`
+	}
+	if err := yaml.Unmarshal(raw, &promptPresence); err != nil {
+		return Config{}, fmt.Errorf("decode plugin config: %w", err)
+	}
+	cfg.compactPromptSet = promptPresence.CompactPrompt != nil
 	if cfg.OnNoMatch == "" {
 		cfg.OnNoMatch = ActionPassthrough
 	}
@@ -68,6 +76,9 @@ func loadConfig(raw []byte) (Config, error) {
 	for i, model := range cfg.SummaryImageModels {
 		if strings.TrimSpace(model) == "" {
 			return Config{}, fmt.Errorf("summary_image_models %d is empty", i)
+		}
+		if _, err := filepath.Match(model, ""); err != nil {
+			return Config{}, fmt.Errorf("summary_image_models %d has invalid match glob %q", i, model)
 		}
 	}
 	for i, rule := range cfg.Rules {
