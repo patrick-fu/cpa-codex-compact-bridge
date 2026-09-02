@@ -33,7 +33,7 @@ func v1CompactResponseBody(items []inputItem, itemID, summary string) ([]byte, e
 }
 
 // v2CompactionItemJSON builds the plaintext V2 compaction item object.
-// {"type":"compaction","id":"cpa_compact_<uuid>","encrypted_content":"<summary>"}
+// {"encrypted_content":"<summary>","id":"cpa_compact_<uuid>","type":"compaction"}
 func v2CompactionItemJSON(id, summary string) ([]byte, error) {
 	if strings.TrimSpace(summary) == "" {
 		return nil, fmt.Errorf("refusing to store a blank compaction summary")
@@ -52,9 +52,10 @@ func v2CompactionItemJSON(id, summary string) ([]byte, error) {
 
 // v2SSEEvents builds exactly the two SSE frames for a V2 compact response:
 //
-//	data: {"type":"response.output_item.done","item":{...compaction...}}
-//	data: {"type":"response.completed","response":{"id":"resp_cpa_compact_<uuid>"}}
+//	data: {"item":{"encrypted_content":"...","id":"cpa_compact_<uuid>","type":"compaction"},"type":"response.output_item.done"}
+//	data: {"response":{"id":"resp_cpa_compact_<uuid>"},"type":"response.completed"}
 //
+// Map keys encode in dictionary order; consumers must not depend on field adjacency or order.
 // No partial, no created, no invented usage.
 func v2SSEEvents(itemID, summary string) ([]byte, error) {
 	compactionItem, err := v2CompactionItemJSON(itemID, summary)
@@ -89,7 +90,7 @@ func v2SSEEvents(itemID, summary string) ([]byte, error) {
 
 // v2ResponseFailedSSE builds the single V2 failure frame:
 //
-//	data: {"type":"response.failed",...,"error":{"code":"compact_bridge_failed","message":"<msg>"}}
+//	data: {"response":{"error":{"code":"compact_bridge_failed","message":"<msg>"},"id":"resp_cpa_compact_failed"},"type":"response.failed"}
 //
 // The caller closes the stream after this without response.completed.
 func v2ResponseFailedSSE(message string) []byte {
