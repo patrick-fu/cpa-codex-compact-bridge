@@ -25,17 +25,28 @@ type Rule struct {
 
 // Config is the plugin configuration block (plugins.configs.<pluginID>).
 type Config struct {
-	Enabled       bool   `yaml:"enabled"`
-	Priority      int    `yaml:"priority"`
-	Rules         []Rule `yaml:"rules"`
-	OnNoMatch     Action `yaml:"on_no_match"`
-	CompactPrompt string `yaml:"compact_prompt"`
+	Enabled            bool     `yaml:"enabled"`
+	Priority           int      `yaml:"priority"`
+	Rules              []Rule   `yaml:"rules"`
+	OnNoMatch          Action   `yaml:"on_no_match"`
+	CompactPrompt      string   `yaml:"compact_prompt"`
+	MaxSummaryTokens   int      `yaml:"max_summary_tokens"`
+	MaxSummaryBytes    int      `yaml:"max_summary_bytes"`
+	AppendToolGuard    bool     `yaml:"append_tool_guard"`
+	ForwardServiceTier bool     `yaml:"forward_service_tier"`
+	SummaryImageModels []string `yaml:"summary_image_models"`
 }
 
+const (
+	defaultMaxSummaryTokens = 8000
+	maxAllowedSummaryTokens = 100000
+	defaultMaxSummaryBytes  = 1024 * 1024
+)
+
 // loadConfig parses the YAML configuration bytes into a Config. It validates
-// rule actions and coerces on_no_match to passthrough when unset.
+// rule actions and applies the documented defaults for unset summary settings.
 func loadConfig(raw []byte) (Config, error) {
-	cfg := Config{OnNoMatch: ActionPassthrough}
+	cfg := defaultConfig()
 	if len(raw) == 0 {
 		return cfg, nil
 	}
@@ -44,6 +55,20 @@ func loadConfig(raw []byte) (Config, error) {
 	}
 	if cfg.OnNoMatch == "" {
 		cfg.OnNoMatch = ActionPassthrough
+	}
+	if cfg.MaxSummaryTokens <= 0 {
+		cfg.MaxSummaryTokens = defaultMaxSummaryTokens
+	}
+	if cfg.MaxSummaryTokens > maxAllowedSummaryTokens {
+		return Config{}, fmt.Errorf("max_summary_tokens %d is outside 1..%d", cfg.MaxSummaryTokens, maxAllowedSummaryTokens)
+	}
+	if cfg.MaxSummaryBytes <= 0 {
+		return Config{}, fmt.Errorf("max_summary_bytes must be greater than zero")
+	}
+	for i, model := range cfg.SummaryImageModels {
+		if strings.TrimSpace(model) == "" {
+			return Config{}, fmt.Errorf("summary_image_models %d is empty", i)
+		}
 	}
 	for i, rule := range cfg.Rules {
 		switch rule.Action {
@@ -56,6 +81,15 @@ func loadConfig(raw []byte) (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func defaultConfig() Config {
+	return Config{
+		OnNoMatch:        ActionPassthrough,
+		MaxSummaryTokens: defaultMaxSummaryTokens,
+		MaxSummaryBytes:  defaultMaxSummaryBytes,
+		AppendToolGuard:  true,
+	}
 }
 
 // matchDecision reports whether the model matches a bridge rule and returns

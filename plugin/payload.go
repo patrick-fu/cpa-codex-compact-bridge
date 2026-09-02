@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -118,13 +119,27 @@ const errCodeCompactBridgeFailed = "compact_bridge_failed"
 // state that can never be continued. It is a client error and is not retried.
 const errCodeInvalidCompactionState = "invalid_compaction_state"
 
-// extractAssistantText extracts the plain text from a Responses or
-// chat-completions assistant message produced by the summary model. It handles
-// output_text content parts and simple string content.
+// extractAssistantText accepts only terminal Responses and Chat Completions
+// summary responses. A compaction must never persist partial or tool-call
+// output as session state.
 func extractAssistantText(body []byte) (string, error) {
-	// Responses-style: {output:[{role:assistant, content:[{type:output_text,text}]}]}
-	var responses struct {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "", err
+	}
+	if _, ok := envelope["output"]; ok {
+		return extractResponsesAssistantText(envelope)
+	}
+	if _, ok := envelope["choices"]; ok {
+		return extractChatAssistantText(envelope)
+	}
+	return "", fmt.Errorf("no assistant text found in summary model response")
+}
+
+func extractResponsesAssistantText(envelope map[string]json.RawMessage) (string, error) {
+	var response struct {
 		Output []struct {
+			Type    string `json:"type"`
 			Role    string `json:"role"`
 			Content []struct {
 				Type string `json:"type"`
@@ -132,31 +147,168 @@ func extractAssistantText(body []byte) (string, error) {
 			} `json:"content"`
 		} `json:"output"`
 	}
-	if err := json.Unmarshal(body, &responses); err == nil {
-		var sb []byte
-		for _, out := range responses.Output {
-			for _, c := range out.Content {
-				if c.Type == "output_text" && c.Text != "" {
-					sb = append(sb, c.Text...)
-				}
+	if err := json.Unmarshal(envelope["output"], &response.Output); err != nil {
+		return "", err
+	}
+	status, hasStatus, err := responseStatus(envelope)
+	if err != nil {
+		return "", err
+	}
+	if hasStatus && status != "completed" {
+		if status == "failed" {
+			return "", summaryFailure("summary upstream failed (status=%s)", status)
+		}
+		if reason := incompleteReason(envelope); reason != "" {
+			return "", summaryFailure("summary upstream incomplete (reason=%s)", reason)
+		}
+		return "", summaryFailure("summary upstream incomplete (status=%s)", status)
+	}
+	if responseContainsToolCall(response.Output) {
+		return "", summaryFailure("summary upstream returned tool call")
+	}
+	if reason := incompleteReason(envelope); reason != "" {
+		return "", summaryFailure("summary upstream incomplete (reason=%s)", reason)
+	}
+	if hasJSONValue(envelope["incomplete_details"]) {
+		return "", summaryFailure("summary upstream incomplete (reason=unknown)")
+	}
+	var text strings.Builder
+	for _, output := range response.Output {
+		if output.Role != "assistant" {
+			continue
+		}
+		for _, content := range output.Content {
+			if content.Type == "output_text" && content.Text != "" {
+				text.WriteString(content.Text)
 			}
 		}
-		if len(sb) > 0 {
-			return string(sb), nil
+	}
+	if text.Len() > 0 {
+		return text.String(), nil
+	}
+	if responseContainsReasoning(response.Output) {
+		return "", summaryFailure("summary model produced no usable text")
+	}
+	if !hasStatus {
+		return "", summaryFailure("summary text missing terminal status")
+	}
+	return "", summaryFailure("summary model produced no usable text")
+}
+
+func responseStatus(envelope map[string]json.RawMessage) (string, bool, error) {
+	raw, ok := envelope["status"]
+	if !ok || string(raw) == "null" {
+		return "", false, nil
+	}
+	var status string
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return "", false, summaryFailure("summary upstream incomplete (status=invalid)")
+	}
+	return status, true, nil
+}
+
+func responseContainsToolCall(output []struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) bool {
+	for _, item := range output {
+		switch item.Type {
+		case "function_call", "custom_tool_call", "tool_call", "function_call_output":
+			return true
+		}
+		for _, content := range item.Content {
+			switch content.Type {
+			case "function_call", "custom_tool_call", "tool_call", "function_call_output":
+				return true
+			}
 		}
 	}
-	// Chat-completions-style: {choices:[{message:{content}}]}
+	return false
+}
+
+func responseContainsReasoning(output []struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) bool {
+	for _, item := range output {
+		if item.Type == "reasoning" {
+			return true
+		}
+	}
+	return false
+}
+
+func extractChatAssistantText(envelope map[string]json.RawMessage) (string, error) {
 	var chat struct {
 		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
+			FinishReason *string `json:"finish_reason"`
+			Message      struct {
+				Content   json.RawMessage `json:"content"`
+				ToolCalls json.RawMessage `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.Unmarshal(body, &chat); err == nil && len(chat.Choices) > 0 && chat.Choices[0].Message.Content != "" {
-		return chat.Choices[0].Message.Content, nil
+	if err := json.Unmarshal(envelope["choices"], &chat.Choices); err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("no assistant text found in summary model response")
+	if len(chat.Choices) == 0 {
+		return "", summaryFailure("summary text missing terminal status")
+	}
+	choice := chat.Choices[0]
+	if choice.FinishReason == nil {
+		return "", summaryFailure("summary text missing terminal status")
+	}
+	switch *choice.FinishReason {
+	case "stop":
+	case "length":
+		return "", summaryFailure("summary upstream truncated (finish_reason=length)")
+	case "tool_calls":
+		return "", summaryFailure("summary upstream returned tool call")
+	default:
+		return "", summaryFailure("summary upstream incomplete (finish_reason=%s)", *choice.FinishReason)
+	}
+	if hasJSONValue(choice.Message.ToolCalls) {
+		return "", summaryFailure("summary upstream returned tool call")
+	}
+	var content string
+	if err := json.Unmarshal(choice.Message.Content, &content); err != nil {
+		return "", summaryFailure("summary model produced no usable text")
+	}
+	if content == "" {
+		return "", summaryFailure("summary model produced no usable text")
+	}
+	return content, nil
+}
+
+func hasJSONValue(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null" && trimmed != "[]"
+}
+
+func incompleteReason(envelope map[string]json.RawMessage) string {
+	raw, ok := envelope["incomplete_details"]
+	if !ok || !hasJSONValue(raw) {
+		return ""
+	}
+	var details struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(raw, &details); err != nil || details.Reason == "" {
+		return ""
+	}
+	return details.Reason
+}
+
+func summaryFailure(format string, args ...any) *pluginErr {
+	return &pluginErr{Code: errCodeCompactBridgeFailed, Message: fmt.Sprintf(format, args...)}
 }
 
 // extractSummaryText returns the summary text of a Summary Model response. A
@@ -165,10 +317,14 @@ func extractAssistantText(body []byte) (string, error) {
 func extractSummaryText(body []byte) (string, error) {
 	text, err := extractAssistantText(body)
 	if err != nil {
-		return "", err
+		var summaryErr *pluginErr
+		if errors.As(err, &summaryErr) {
+			return "", summaryErr
+		}
+		return "", summaryFailure("summary model produced no usable text")
 	}
 	if strings.TrimSpace(text) == "" {
-		return "", &pluginErr{Code: errCodeCompactBridgeFailed, Message: "summary model produced no usable text"}
+		return "", summaryFailure("summary model produced no usable text")
 	}
 	return text, nil
 }

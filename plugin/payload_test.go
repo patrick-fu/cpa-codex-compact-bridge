@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -398,7 +399,7 @@ func TestExtractSummaryTextRejectsBlankSummary(t *testing.T) {
 		want string
 	}{
 		{"Responses", []byte(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"  kept summary  "}]}]}`), "  kept summary  "},
-		{"Chat", []byte(`{"choices":[{"message":{"content":"chat summary"}}]}`), "chat summary"},
+		{"Chat", []byte(`{"choices":[{"message":{"content":"chat summary"},"finish_reason":"stop"}]}`), "chat summary"},
 	}
 	for _, tt := range usable {
 		t.Run(tt.name, func(t *testing.T) {
@@ -447,7 +448,7 @@ func TestExtractAssistantTextResponsesConcatenatesOutputTextParts(t *testing.T) 
 }
 
 func TestExtractAssistantTextChat(t *testing.T) {
-	body := []byte(`{"choices":[{"message":{"content":"chat reply"}}]}`)
+	body := []byte(`{"choices":[{"message":{"content":"chat reply"},"finish_reason":"stop"}]}`)
 	text, err := extractAssistantText(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -483,6 +484,62 @@ func TestExtractAssistantTextRejectsMalformedAndEmptyVariants(t *testing.T) {
 	}
 }
 
+func TestExtractSummaryTextCompletionStates(t *testing.T) {
+	// This fixture preserves the observed qwen HTTP 200 Chat payload. CPA
+	// translates it to a Responses function_call while retaining status="completed".
+	qwenToolCall, err := os.ReadFile("../testdata/qwen-summary-tool-call.json")
+	if err != nil {
+		t.Fatalf("read qwen tool-call fixture: %v", err)
+	}
+	cases := []struct {
+		name    string
+		body    []byte
+		want    string
+		wantErr string
+	}{
+		{"responses completed", []byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "summary", ""},
+		{"responses incomplete", []byte(`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream incomplete (reason=max_output_tokens)"},
+		{"responses failed", []byte(`{"status":"failed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream failed (status=failed)"},
+		{"responses missing status with output text", []byte(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "summary", ""},
+		{"responses missing status with only tool call", []byte(`{"output":[{"type":"function_call","name":"search","arguments":"{}"}]}`), "", "summary upstream returned tool call"},
+		{"responses completed with translated tool call", []byte(`{"status":"completed","output":[{"type":"function_call","name":"search","arguments":"{}"}]}`), "", "summary upstream returned tool call"},
+		{"qwen tool-call fixture", qwenToolCall, "", "summary upstream returned tool call"},
+		{"responses reasoning has no text fallback", []byte(`{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"hidden"}]}]}`), "", "summary model produced no usable text"},
+		{"responses incomplete details", []byte(`{"status":"completed","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"summary"}]}]}`), "", "summary upstream incomplete (reason=max_output_tokens)"},
+		{"chat stop", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"stop"}]}`), "summary", ""},
+		{"chat length", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"length"}]}`), "", "summary upstream truncated (finish_reason=length)"},
+		{"chat tool calls", []byte(`{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1"}]},"finish_reason":"tool_calls"}]}`), "", "summary upstream returned tool call"},
+		{"chat content filter", []byte(`{"choices":[{"message":{"content":"summary"},"finish_reason":"content_filter"}]}`), "", "summary upstream incomplete (finish_reason=content_filter)"},
+		{"chat missing finish reason", []byte(`{"choices":[{"message":{"content":"summary"}}]}`), "", "summary text missing terminal status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text, err := extractSummaryText(tc.body)
+			if tc.wantErr == "" {
+				if err != nil || text != tc.want {
+					t.Fatalf("text=%q err=%v, want %q", text, err, tc.want)
+				}
+				return
+			}
+			pluginErrValue := mustPluginErr(t, err, errCodeCompactBridgeFailed)
+			if text != "" || pluginErrValue.Message != tc.wantErr {
+				t.Fatalf("text=%q error=%+v, want message %q", text, pluginErrValue, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateSummarySizeRejectsOversizedSummary(t *testing.T) {
+	err := validateSummarySize("12345", 4)
+	pluginErrValue := mustPluginErr(t, err, errCodeCompactBridgeFailed)
+	if pluginErrValue.Message != "summary exceeds 4 bytes" {
+		t.Fatalf("summary size error = %+v", pluginErrValue)
+	}
+	if err := validateSummarySize("雪", len([]byte("雪"))); err != nil {
+		t.Fatalf("exact byte limit rejected: %v", err)
+	}
+}
+
 func TestErrorEnvelopeFromPreservesBridgeContract(t *testing.T) {
 	raw := errorEnvelopeFrom(&pluginErr{
 		Code:       errCodeCompactBridgeFailed,
@@ -514,7 +571,7 @@ func TestCompactFailureMessageIsSanitized(t *testing.T) {
 func TestBuildSummaryRequestBodyUsesCodexLocalDefaultPrompt(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"model":"bridge-test","stream":true,"input":[{"type":"message","role":"user","content":"old"}]}`)
-	body, err := buildSummaryRequestBody(req, "summary-test", []json.RawMessage{json.RawMessage(`{"type":"message","role":"user","content":"old"}`)}, "")
+	body, err := buildSummaryRequestBody(req, "summary-test", []json.RawMessage{json.RawMessage(`{"type":"message","role":"user","content":"old"}`)}, defaultConfig())
 	if err != nil {
 		t.Fatalf("build summary request: %v", err)
 	}
@@ -546,7 +603,7 @@ func TestBuildSummaryRequestBodyUsesCodexLocalDefaultPrompt(t *testing.T) {
 		"- Important context, constraints, or user preferences\n" +
 		"- What remains to be done (clear next steps)\n" +
 		"- Any critical data, examples, or references needed to continue\n\n" +
-		"Be concise, structured, and focused on helping the next LLM seamlessly continue the work.\n"
+		"Be concise, structured, and focused on helping the next LLM seamlessly continue the work.\n" + compactGuard
 	if instruction.Type != "message" || instruction.Role != "user" || instruction.Content != want {
 		t.Fatalf("compact instruction = %+v, want exact Codex local prompt %q", instruction, want)
 	}
@@ -555,7 +612,9 @@ func TestBuildSummaryRequestBodyUsesCodexLocalDefaultPrompt(t *testing.T) {
 func TestBuildSummaryRequestBodyUsesConfiguredCompactPrompt(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"model":"bridge-test","input":[]}`)
-	body, err := buildSummaryRequestBody(req, "summary-test", nil, "Preserve ticket CPA-42 and the exact next command.")
+	cfg := defaultConfig()
+	cfg.CompactPrompt = "Preserve ticket CPA-42 and the exact next command."
+	body, err := buildSummaryRequestBody(req, "summary-test", nil, cfg)
 	if err != nil {
 		t.Fatalf("build summary request: %v", err)
 	}
@@ -567,22 +626,45 @@ func TestBuildSummaryRequestBodyUsesConfiguredCompactPrompt(t *testing.T) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("decode summary request: %v", err)
 	}
-	if len(parsed.Input) != 1 || parsed.Input[0].Content != "Preserve ticket CPA-42 and the exact next command." {
+	if len(parsed.Input) != 1 || parsed.Input[0].Content != "Preserve ticket CPA-42 and the exact next command.\n"+compactGuard {
 		t.Fatalf("summary input = %+v", parsed.Input)
 	}
 }
 
-func TestBuildSummaryRequestBodyPreservesRequestFieldsAndOverridesProtocolFields(t *testing.T) {
+func TestBuildSummaryRequestBodyUsesWhitelistAndPreservesAllowedFields(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{
 		"model":"original-model",
 		"stream":true,
 		"instructions":"keep this",
+		"reasoning":{"effort":"high"},
+		"service_tier":"priority",
+		"previous_response_id":"resp_old",
+		"conversation":"conv_old",
+		"prompt_cache_key":"cache_old",
+		"store":true,
+		"include":["reasoning.encrypted_content"],
 		"metadata":{"attempt":2},
+		"text":{"format":{"type":"text"}},
+		"tool_choice":"required",
+		"truncation":"auto",
+		"temperature":0.4,
+		"top_p":0.9,
+		"top_k":20,
+		"frequency_penalty":0.2,
+		"presence_penalty":0.1,
+		"user":"user-1",
+		"safety_identifier":"safe-1",
+		"prompt":{"id":"pmpt_1"},
+		"tools":[{"type":"function","name":"must_not_forward"}],
+		"parallel_tool_calls":true,
 		"input":[{"type":"message","role":"user","content":"old"}]
 	}`)
 	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":"keep \"this\""}`)}
-	body, err := buildSummaryRequestBody(req, "summary-model", cleanInput, "")
+	cfg := defaultConfig()
+	cfg.MaxSummaryTokens = 1234
+	cfg.ForwardServiceTier = true
+	body, err := buildSummaryRequestBody(req, "summary-model", cleanInput, cfg)
 	if err != nil {
 		t.Fatalf("build summary request: %v", err)
 	}
@@ -590,11 +672,16 @@ func TestBuildSummaryRequestBodyPreservesRequestFieldsAndOverridesProtocolFields
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("decode summary request: %v", err)
 	}
-	if string(parsed["model"]) != `"summary-model"` || string(parsed["stream"]) != "false" {
-		t.Fatalf("model/stream were not overridden: model=%s stream=%s", parsed["model"], parsed["stream"])
+	if string(parsed["model"]) != `"summary-model"` || string(parsed["stream"]) != "false" || string(parsed["tools"]) != "[]" || string(parsed["parallel_tool_calls"]) != "false" || string(parsed["max_output_tokens"]) != "1234" {
+		t.Fatalf("summary protocol fields = %s", body)
 	}
-	if string(parsed["instructions"]) != `"keep this"` || string(parsed["metadata"]) != `{"attempt":2}` {
-		t.Fatalf("request fields were not preserved: %s", body)
+	if string(parsed["instructions"]) != `"keep this"` || string(parsed["reasoning"]) != `{"effort":"high"}` || string(parsed["service_tier"]) != `"priority"` {
+		t.Fatalf("allowed fields were not preserved: %s", body)
+	}
+	for _, field := range []string{"previous_response_id", "conversation", "prompt_cache_key", "store", "include", "metadata", "text", "tool_choice", "truncation", "temperature", "top_p", "top_k", "frequency_penalty", "presence_penalty", "user", "safety_identifier", "prompt"} {
+		if _, ok := parsed[field]; ok {
+			t.Fatalf("whitelist leaked %q in %s", field, body)
+		}
 	}
 	var input []struct {
 		Type    string `json:"type"`
@@ -604,15 +691,74 @@ func TestBuildSummaryRequestBodyPreservesRequestFieldsAndOverridesProtocolFields
 	if err := json.Unmarshal(parsed["input"], &input); err != nil {
 		t.Fatalf("decode summary input: %v", err)
 	}
-	if len(input) != 2 || input[0].Content != `keep "this"` || input[1].Type != "message" || input[1].Role != "user" || input[1].Content != codexLocalCompactPrompt {
+	if len(input) != 2 || input[0].Content != `keep "this"` || input[1].Type != "message" || input[1].Role != "user" || input[1].Content != codexLocalCompactPrompt+compactGuard {
 		t.Fatalf("unexpected summary input: %+v", input)
+	}
+}
+
+func TestBuildSummaryRequestBodyDoesNotForwardServiceTierByDefault(t *testing.T) {
+	req := rpcExecutorRequest{}
+	req.OriginalRequest = []byte(`{"input":[],"service_tier":"priority"}`)
+	body, err := buildSummaryRequestBody(req, "summary-model", nil, defaultConfig())
+	if err != nil {
+		t.Fatalf("build summary request: %v", err)
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode summary request: %v", err)
+	}
+	if _, ok := parsed["service_tier"]; ok {
+		t.Fatalf("service_tier leaked into summary request: %s", body)
+	}
+}
+
+func TestBuildSummaryRequestBodyImageFiltering(t *testing.T) {
+	cleanInput := []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}`)}
+	req := rpcExecutorRequest{}
+	req.OriginalRequest = []byte(`{"input":[]}`)
+	for _, tc := range []struct {
+		name        string
+		imageModels []string
+		wantImage   bool
+	}{
+		{name: "default strips images"},
+		{name: "allowlisted summary model retains images", imageModels: []string{"vision-summary"}, wantImage: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			cfg.SummaryImageModels = tc.imageModels
+			body, err := buildSummaryRequestBody(req, "vision-summary", cleanInput, cfg)
+			if err != nil {
+				t.Fatalf("build summary request: %v", err)
+			}
+			if got := strings.Contains(string(body), "input_image"); got != tc.wantImage {
+				t.Fatalf("image retained=%v, body=%s", got, body)
+			}
+			if !tc.wantImage && !strings.Contains(string(body), "[image removed]") {
+				t.Fatalf("image was not replaced: %s", body)
+			}
+		})
+	}
+}
+
+func TestBuildSummaryRequestBodyCanDisableToolGuard(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.AppendToolGuard = false
+	req := rpcExecutorRequest{}
+	req.OriginalRequest = []byte(`{"input":[]}`)
+	body, err := buildSummaryRequestBody(req, "summary-model", nil, cfg)
+	if err != nil {
+		t.Fatalf("build summary request: %v", err)
+	}
+	if strings.Contains(string(body), compactGuard) {
+		t.Fatalf("tool guard was not disabled: %s", body)
 	}
 }
 
 func TestBuildSummaryRequestBodyRejectsMalformedOriginalRequest(t *testing.T) {
 	req := rpcExecutorRequest{}
 	req.OriginalRequest = []byte(`{"input":`)
-	_, err := buildSummaryRequestBody(req, "summary-model", nil, "")
+	_, err := buildSummaryRequestBody(req, "summary-model", nil, defaultConfig())
 	if err == nil || !strings.Contains(err.Error(), "summary_encode_failed") {
 		t.Fatalf("expected wrapped malformed-request error, got %v", err)
 	}

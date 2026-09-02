@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -58,7 +59,7 @@ const (
 
 // pluginVersion can be overridden in release builds with:
 // -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=<version>"
-var pluginVersion = "0.1.3"
+var pluginVersion = "0.1.4"
 
 // configHolder holds the active parsed configuration. It is replaced atomically
 // on plugin.register / plugin.reconfigure.
@@ -288,7 +289,7 @@ func executeV1Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 		}
 		return nil, &pluginErr{
 			Code:       errCodeCompactBridgeFailed,
-			Message:    "bridged compaction failed",
+			Message:    compactFailureMessage(err),
 			HTTPStatus: 502,
 		}
 	}
@@ -314,7 +315,7 @@ func executeV2Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 			return nil, stateErr
 		}
 		// V2 runtime failure: emit response.failed (no partial, no completed).
-		failed := v2ResponseFailedSSE("bridged compaction failed")
+		failed := v2ResponseFailedSSE(compactFailureMessage(err))
 		return okEnvelope(map[string]any{
 			"Headers": map[string][]string{"content-type": {"text/event-stream"}},
 			"Chunks":  []map[string]any{{"Payload": failed}},
@@ -333,6 +334,14 @@ func executeV2Compact(cfg Config, req rpcExecutorRequest, decision matchDecision
 		"Headers": map[string][]string{"content-type": {"text/event-stream"}},
 		"Chunks":  []map[string]any{{"Payload": events}},
 	})
+}
+
+func compactFailureMessage(err error) string {
+	var summaryErr *pluginErr
+	if errors.As(err, &summaryErr) && summaryErr.Code == errCodeCompactBridgeFailed {
+		return summaryErr.Message
+	}
+	return "bridged compaction failed"
 }
 
 // executeOrdinaryBridged applies the compaction state policy for a bridged
@@ -393,7 +402,7 @@ func generateSummary(cfg Config, req rpcExecutorRequest, summaryModel, hostCallb
 	if err != nil {
 		return "", err
 	}
-	summaryBody, err := buildSummaryRequestBody(req, summaryModel, cleanInput, cfg.CompactPrompt)
+	summaryBody, err := buildSummaryRequestBody(req, summaryModel, cleanInput, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -408,7 +417,14 @@ func generateSummary(cfg Config, req rpcExecutorRequest, summaryModel, hostCallb
 	if err != nil {
 		return "", err
 	}
-	return extractSummaryText(resp.Body)
+	summary, err := extractSummaryText(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if err := validateSummarySize(summary, cfg.summaryMaxBytes()); err != nil {
+		return "", err
+	}
+	return summary, nil
 }
 
 // buildSummaryRequestBody constructs the summary request body: keep the model,
@@ -424,7 +440,11 @@ Include:
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
 `
 
-func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanInput []json.RawMessage, configuredPrompt string) ([]byte, error) {
+// The official template must remain byte-for-byte aligned, so the guard stays
+// separate; see codex-localcompact@8c525a2 config.go:16-27.
+const compactGuard = "Do not answer the user. Do not call tools. Output only the continuation summary."
+
+func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanInput []json.RawMessage, cfg Config) ([]byte, error) {
 	var parsed map[string]json.RawMessage
 	if len(req.OriginalRequest) > 0 {
 		if err := json.Unmarshal(req.OriginalRequest, &parsed); err != nil {
@@ -433,11 +453,19 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 	} else {
 		parsed = map[string]json.RawMessage{}
 	}
-	parsed["model"] = jsonRawString(summaryModel)
-	parsed["stream"] = jsonRawFalse()
+	filteredInput, err := stripSummaryInputImages(cleanInput, summaryModel, cfg.SummaryImageModels)
+	if err != nil {
+		return nil, fmtSummaryBody(err)
+	}
 	compactPrompt := codexLocalCompactPrompt
-	if strings.TrimSpace(configuredPrompt) != "" {
-		compactPrompt = configuredPrompt
+	if strings.TrimSpace(cfg.CompactPrompt) != "" {
+		compactPrompt = cfg.CompactPrompt
+	}
+	if cfg.AppendToolGuard {
+		if !strings.HasSuffix(compactPrompt, "\n") {
+			compactPrompt += "\n"
+		}
+		compactPrompt += compactGuard
 	}
 	compactInstruction, err := json.Marshal(map[string]any{
 		"type":    "message",
@@ -447,17 +475,124 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 	if err != nil {
 		return nil, fmtSummaryBody(err)
 	}
-	cleanInput = append(cleanInput, compactInstruction)
-	inputEncoded, err := json.Marshal(cleanInput)
+	filteredInput = append(filteredInput, compactInstruction)
+	inputEncoded, err := json.Marshal(filteredInput)
 	if err != nil {
 		return nil, fmtSummaryBody(err)
 	}
-	parsed["input"] = inputEncoded
-	out, err := json.Marshal(parsed)
+	body := map[string]json.RawMessage{
+		"model":               jsonRawString(summaryModel),
+		"input":               inputEncoded,
+		"tools":               json.RawMessage("[]"),
+		"parallel_tool_calls": jsonRawFalse(),
+		"max_output_tokens":   jsonRawInt(cfg.summaryMaxTokens()),
+		"stream":              jsonRawFalse(),
+	}
+	if instructions, ok := parsed["instructions"]; ok {
+		body["instructions"] = instructions
+	}
+	if reasoning, ok := parsed["reasoning"]; ok {
+		body["reasoning"] = reasoning
+	}
+	if cfg.ForwardServiceTier {
+		if serviceTier, ok := parsed["service_tier"]; ok {
+			body["service_tier"] = serviceTier
+		}
+	}
+	out, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmtSummaryBody(err)
 	}
 	return out, nil
+}
+
+func (cfg Config) summaryMaxTokens() int {
+	if cfg.MaxSummaryTokens <= 0 {
+		return defaultMaxSummaryTokens
+	}
+	return cfg.MaxSummaryTokens
+}
+
+func (cfg Config) summaryMaxBytes() int {
+	if cfg.MaxSummaryBytes <= 0 {
+		return defaultMaxSummaryBytes
+	}
+	return cfg.MaxSummaryBytes
+}
+
+func validateSummarySize(summary string, maxBytes int) error {
+	if len([]byte(summary)) > maxBytes {
+		return summaryFailure("summary exceeds %d bytes", maxBytes)
+	}
+	return nil
+}
+
+func stripSummaryInputImages(items []json.RawMessage, summaryModel string, imageModels []string) ([]json.RawMessage, error) {
+	if summaryModelAllowsImages(summaryModel, imageModels) {
+		return append([]json.RawMessage(nil), items...), nil
+	}
+	out := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		var message map[string]json.RawMessage
+		if err := json.Unmarshal(item, &message); err != nil {
+			return nil, err
+		}
+		contentRaw, ok := message["content"]
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		var parts []json.RawMessage
+		if err := json.Unmarshal(contentRaw, &parts); err != nil {
+			out = append(out, item)
+			continue
+		}
+		changed := false
+		for i, part := range parts {
+			var contentPart struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(part, &contentPart); err != nil {
+				return nil, err
+			}
+			if contentPart.Type != "input_image" {
+				continue
+			}
+			replacement, err := json.Marshal(map[string]string{
+				"type": "input_text",
+				"text": "[image removed]",
+			})
+			if err != nil {
+				return nil, err
+			}
+			parts[i] = replacement
+			changed = true
+		}
+		if !changed {
+			out = append(out, item)
+			continue
+		}
+		content, err := json.Marshal(parts)
+		if err != nil {
+			return nil, err
+		}
+		message["content"] = content
+		rewritten, err := json.Marshal(message)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rewritten)
+	}
+	return out, nil
+}
+
+func summaryModelAllowsImages(summaryModel string, imageModels []string) bool {
+	for _, model := range imageModels {
+		if model == summaryModel {
+			return true
+		}
+	}
+	return false
 }
 
 // parseRequestInputItems extracts the input items array from a request body.
@@ -538,4 +673,8 @@ func jsonRawString(s string) json.RawMessage {
 
 func jsonRawFalse() json.RawMessage {
 	return json.RawMessage("false")
+}
+
+func jsonRawInt(value int) json.RawMessage {
+	return json.RawMessage(strconv.Itoa(value))
 }

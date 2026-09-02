@@ -111,7 +111,7 @@ func registeredPluginVersion(t *testing.T) string {
 func TestPluginRegisterResponseUsesConfiguredVersion(t *testing.T) {
 	want := os.Getenv("CPA_COMPACT_EXPECTED_PLUGIN_VERSION")
 	if want == "" {
-		want = "0.1.3"
+		want = "0.1.4"
 	}
 	if got := registeredPluginVersion(t); got != want {
 		t.Fatalf("plugin.register metadata.Version = %q, want %q", got, want)

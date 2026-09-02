@@ -19,7 +19,7 @@ func (a *atomicConfig) store(cfg Config) {
 func (a *atomicConfig) load() Config {
 	p := a.p.Load()
 	if p == nil {
-		return Config{OnNoMatch: ActionPassthrough}
+		return defaultConfig()
 	}
 	return *p
 }

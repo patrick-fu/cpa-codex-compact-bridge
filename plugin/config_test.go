@@ -12,6 +12,9 @@ func TestLoadConfigDefault(t *testing.T) {
 	if cfg.OnNoMatch != ActionPassthrough {
 		t.Fatalf("OnNoMatch = %q, want passthrough", cfg.OnNoMatch)
 	}
+	if cfg.MaxSummaryTokens != defaultMaxSummaryTokens || cfg.MaxSummaryBytes != defaultMaxSummaryBytes || !cfg.AppendToolGuard || cfg.ForwardServiceTier || len(cfg.SummaryImageModels) != 0 {
+		t.Fatalf("summary defaults = %+v", cfg)
+	}
 }
 
 func TestLoadConfigRules(t *testing.T) {
@@ -38,8 +41,48 @@ on_no_match: passthrough
 	if cfg.Rules[0].SummaryModel != "glm-5.2" {
 		t.Fatalf("rule0 summary = %q", cfg.Rules[0].SummaryModel)
 	}
-	if cfg.CompactPrompt != "Preserve exact task state." {
-		t.Fatalf("CompactPrompt = %q", cfg.CompactPrompt)
+	if cfg.CompactPrompt != "Preserve exact task state." || !cfg.AppendToolGuard {
+		t.Fatalf("partial config lost defaults: %+v", cfg)
+	}
+}
+
+func TestLoadConfigSummarySettings(t *testing.T) {
+	cfg, err := loadConfig([]byte(`
+max_summary_tokens: 4096
+max_summary_bytes: 65536
+append_tool_guard: false
+forward_service_tier: true
+summary_image_models: ["vision-summary"]
+`))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.MaxSummaryTokens != 4096 || cfg.MaxSummaryBytes != 65536 || cfg.AppendToolGuard || !cfg.ForwardServiceTier || len(cfg.SummaryImageModels) != 1 || cfg.SummaryImageModels[0] != "vision-summary" {
+		t.Fatalf("summary settings = %+v", cfg)
+	}
+}
+
+func TestLoadConfigRejectsInvalidSummarySettings(t *testing.T) {
+	cases := []string{
+		"max_summary_tokens: 100001\n",
+		"max_summary_bytes: 0\n",
+		"max_summary_bytes: -1\n",
+		"summary_image_models: [\"\"]\n",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := loadConfig([]byte(raw)); err == nil {
+				t.Fatalf("loadConfig(%q) succeeded", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"max_summary_tokens: 0\n", "max_summary_tokens: -1\n"} {
+		t.Run(raw, func(t *testing.T) {
+			cfg, err := loadConfig([]byte(raw))
+			if err != nil || cfg.MaxSummaryTokens != defaultMaxSummaryTokens {
+				t.Fatalf("loadConfig(%q) = %+v, %v", raw, cfg, err)
+			}
+		})
 	}
 }
 

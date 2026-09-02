@@ -34,11 +34,12 @@ type upstreamRequest struct {
 }
 
 type fakeUpstream struct {
-	server       *httptest.Server
-	mu           sync.Mutex
-	calls        []upstreamRequest
-	failRequests bool
-	blankSummary bool
+	server          *httptest.Server
+	mu              sync.Mutex
+	calls           []upstreamRequest
+	failRequests    bool
+	blankSummary    bool
+	toolCallSummary bool
 }
 
 func newFakeUpstream() *fakeUpstream {
@@ -53,6 +54,7 @@ func newFakeUpstream() *fakeUpstream {
 		f.calls = append(f.calls, upstreamRequest{Path: r.URL.Path, Body: append([]byte(nil), body...)})
 		shouldFail := f.failRequests
 		blankSummary := f.blankSummary
+		toolCallSummary := f.toolCallSummary
 		f.mu.Unlock()
 
 		if shouldFail {
@@ -72,6 +74,11 @@ func newFakeUpstream() *fakeUpstream {
 			text = "fixture compact summary"
 			if blankSummary {
 				text = "   \n "
+			}
+			if toolCallSummary {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chatcmpl_fake","object":"chat.completion","model":"`+request.Model+`","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_compact","type":"function","function":{"name":"search","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+				return
 			}
 		}
 		if request.Stream {
@@ -114,7 +121,7 @@ func TestSummaryRequestUsesCodexLocalCompactPrompt(t *testing.T) {
 	if err := json.Unmarshal(calls[0].Body, &request); err != nil {
 		t.Fatalf("decode summary request: %v", err)
 	}
-	if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != "user" || request.Messages[len(request.Messages)-1].Content != "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.\n" {
+	if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != "user" || request.Messages[len(request.Messages)-1].Content != "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.\nDo not answer the user. Do not call tools. Output only the continuation summary." {
 		t.Fatalf("summary request did not use the Codex local compact prompt: messages=%+v body=%s", request.Messages, calls[0].Body)
 	}
 }
@@ -143,6 +150,12 @@ func (f *fakeUpstream) setBlankSummary() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.blankSummary = true
+}
+
+func (f *fakeUpstream) setToolCallSummary() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolCallSummary = true
 }
 
 type harness struct {
@@ -585,6 +598,20 @@ func TestV1CompactUpstreamFailure(t *testing.T) {
 	}
 }
 
+// TestV1CompactSummaryToolCallFails covers the CPA v7.2.125 translation path:
+// tool_calls becomes a Responses function_call while status remains completed.
+func TestV1CompactSummaryToolCallFails(t *testing.T) {
+	h := newHarness(t)
+	h.upstream.setToolCallSummary()
+	response := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact.json"))
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("V1 compact tool-call status = %d, want 502, body=%s", response.StatusCode, response.Body)
+	}
+	if !strings.Contains(string(response.Body), "summary upstream returned tool call") || strings.Contains(string(response.Body), "cpa_compact_") {
+		t.Fatalf("V1 compact tool call was not rejected safely: %s", response.Body)
+	}
+}
+
 // TestV2CompactUpstreamFailure verifies that V2 compact emits response.failed
 // (and NOT response.completed) when the summary model upstream fails.
 func TestV2CompactUpstreamFailure(t *testing.T) {
@@ -790,7 +817,7 @@ func TestBlankSummaryIsRuntimeCompactionFailure(t *testing.T) {
 	h.upstream.setBlankSummary()
 
 	v1 := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact.json"))
-	if v1.StatusCode != http.StatusBadGateway || !strings.Contains(string(v1.Body), bridgeErrCode) && !strings.Contains(string(v1.Body), "compaction failed") {
+	if v1.StatusCode != http.StatusBadGateway || !strings.Contains(string(v1.Body), "summary model produced no usable text") {
 		t.Fatalf("V1 blank summary status = %d, body=%s", v1.StatusCode, v1.Body)
 	}
 	if strings.Contains(string(v1.Body), "cpa_compact_") {
