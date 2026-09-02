@@ -104,7 +104,7 @@ func (f *fakeUpstream) snapshot() []upstreamRequest {
 
 func TestSummaryRequestUsesCodexLocalCompactPrompt(t *testing.T) {
 	h := newHarness(t)
-	response := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact.json"))
+	response := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact-with-tools.json"))
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("V1 compact status = %d, body=%s", response.StatusCode, response.Body)
 	}

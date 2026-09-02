@@ -1,0 +1,22 @@
+{
+  "model": "bridge-test",
+  "tools": [{
+    "type": "function",
+    "name": "lookup_ticket",
+    "description": "Look up a ticket by identifier.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "ticket": {"type": "string"}
+      },
+      "required": ["ticket"]
+    }
+  }],
+  "tool_choice": "required",
+  "parallel_tool_calls": true,
+  "input": [{
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "history to compact"}]
+  }]
+}
