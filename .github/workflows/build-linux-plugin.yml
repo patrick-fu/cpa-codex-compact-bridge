@@ -47,7 +47,13 @@ jobs:
       - name: Build c-shared ABI library
         working-directory: plugin
         run: |
-          VERSION="0.1.3-rc.${GITHUB_SHA::7}"
+          BASE_VERSION="$(sed -n 's/.*pluginVersion = "\([^"]*\)".*/\1/p' main.go)"
+          if [ -z "$BASE_VERSION" ]; then
+            echo "::error::Could not derive plugin version from plugin/main.go"
+            exit 1
+          fi
+          SHORT_SHA="$(printf '%.7s' "$GITHUB_SHA")"
+          VERSION="${BASE_VERSION}-rc.${SHORT_SHA}"
           mkdir -p ../dist/linux-amd64
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -buildmode=c-shared \
