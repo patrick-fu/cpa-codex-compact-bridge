@@ -122,9 +122,12 @@ ls -l /CLIProxyAPI/plugins/linux/amd64/cpa-codex-compact-bridge-v0.1.2.so /CLIPr
 
 ```sh
 cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'CPA_BASE_URL="$CPA_BASE_URL" CPA_API_KEY="$CPA_API_KEY" CPA_MODEL="$CPA_MODEL" /CLIProxyAPI/scripts/compact-smoke.sh'
+cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'CPA_BASE_URL="$CPA_BASE_URL" CPA_API_KEY="$CPA_API_KEY" CPA_MODEL="$CPA_MODEL" /CLIProxyAPI/scripts/compact-smoke.sh --expect-failure'
 ```
 
-以 `scripts/compact-smoke.sh --help` 为准：退出码 `0` 表示全部通过；`3` 表示压缩链路通过但摘要未保留 sentinel，不属于桥接故障，记录输出和父日志后继续 24 小时观察，不回滚；其他非零表示真失败，停止放量并按第 7 节回滚。V2 compaction item 的字段顺序不构成判据，必须按字段名验证，不得依赖 `encrypted_content`、`id`、`type` 的相邻或序列化顺序。
+普通 smoke 的成功判据为：HTTP 200、去重后恰有一个 `cpa_compact_` id、恰有一个 `response.output_item.done` 帧、收到 completed event 且没有 failed event，并且 `encrypted_content` 非空且为 1..1048576 字节。摘要文本允许非 ASCII 字符；V2 compaction item 的字段顺序不构成判据，必须按字段名验证，不得依赖 `encrypted_content`、`id`、`type` 的相邻或序列化顺序。`--expect-failure` 发送外来不透明 compaction 状态，必须被 HTTP 400 `invalid_compaction_state` 拒绝。可选地，发送 `cpa_compact_` 前缀但 `encrypted_content` 为空的状态也必须被 HTTP 400 拒绝。
+
+以 `scripts/compact-smoke.sh --help` 为准：退出码 `0` 表示全部通过；`3` 表示压缩链路通过但摘要未保留 sentinel，不属于桥接故障，记录输出和父日志后继续 24 小时观察，不回滚；其他非零表示真失败，停止放量并按第 7 节回滚。
 
 摘要嵌套调用不会新建独立的 `v1-responses-*.log`；它会在触发 smoke 的父请求日志中以 `API REQUEST n` 分节记录。用 sentinel 找到父日志并审计该分节：
 
@@ -132,14 +135,15 @@ cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 
 cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'grep -l "CPA_SMOKE_SENTINEL_7F3A9C" /CLIProxyAPI/logs/v1-responses-*.log | sed -n "1p"'
 ```
 
-将上一步返回的父日志路径替换为 `PARENT_LOG`。smoke 的父请求是 `API REQUEST 1`，其嵌套摘要调用是 `API REQUEST 2`。以下范围在 `API RESPONSE 2` 前结束，故只检查摘要请求体而不读取响应体；确认它没有 `tools` 与 `tool_choice` 字段：
+将上一步返回的父日志路径替换为 `PARENT_LOG`。在所有 `API REQUEST n` 分节中，定位包含 `CONTEXT CHECKPOINT COMPACTION` 且不包含 `compaction_trigger` 的唯一分节；以下命令在对应 `API RESPONSE n` 前结束，故只检查请求体而不读取响应体。确认该分节没有 `tools` 与 `tool_choice`，并且有 `max_tokens` 与 `stream:false`：
 
 ```sh
-cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'sed -n "/API REQUEST 2/,/API RESPONSE 2/p" "PARENT_LOG" | grep -n -E "tools|tool_choice"'
-cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'sed -n "/API REQUEST 2/,/API RESPONSE 2/p" "PARENT_LOG" | grep -n "max_tokens"'
+cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'awk '\''function emit() { if (section ~ /CONTEXT CHECKPOINT COMPACTION/ && section !~ /compaction_trigger/) print section } /^API REQUEST [0-9]+/ { emit(); section=$0 ORS; in_request=1; next } in_request && /^API RESPONSE [0-9]+/ { emit(); section=""; in_request=0; next } in_request { section=section $0 ORS } END { emit() }'\'' "PARENT_LOG" > /tmp/cpa-summary-request.txt; test "$(grep -c '\''^API REQUEST '\'' /tmp/cpa-summary-request.txt)" -eq 1'
+cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c '! grep -n -E "tools|tool_choice" /tmp/cpa-summary-request.txt'
+cd /tmp && npx --yes zeabur -i=false service exec --id 69d913e9e8ec40d5bceac923 -- sh -c 'grep -n "max_tokens" /tmp/cpa-summary-request.txt; grep -n -E "\"stream\"[[:space:]]*:[[:space:]]*false" /tmp/cpa-summary-request.txt'
 ```
 
-预期：第一条命令无输出且退出码为 1，第二条命令输出 `max_tokens` 所在行。这证明摘要请求已无 `tools`/`tool_choice`，且 v7.2.147 已将 bridge 的 `max_output_tokens` 翻译为上游 `max_tokens`。这是本次修复的正向证据，强于仅验证黑盒请求成功。若第一条找到字段或第二条没有 `max_tokens`，保留父日志路径并立即回滚。`PARENT_LOG` 需在命令执行前人工替换为真实路径，避免在远端命令中使用不受控的变量展开。
+预期：第一条命令只抽取一个请求体分节；第二条无输出且退出码为 0；第三条分别输出 `max_tokens` 和 `stream:false` 所在行。这证明摘要请求已无 `tools`/`tool_choice`，且 v7.2.147 已将 bridge 的 `max_output_tokens` 翻译为上游 `max_tokens`。这是本次修复的正向证据，强于仅验证黑盒请求成功。定位不到唯一分节、找到字段，或缺少 `max_tokens`/`stream:false` 时，保留父日志路径并立即回滚。`PARENT_LOG` 需在命令执行前人工替换为真实路径，避免在远端命令中使用不受控的变量展开。
 
 ## 6. 24 小时验收
 
@@ -176,6 +180,7 @@ ls -l /CLIProxyAPI/plugins/linux/amd64/cpa-codex-compact-bridge-v0.1.2.so
 
 - CPA `status` 在 `<= 7.2.125` 无判别力，不能据此判断摘要调用成功或失败。
 - `cpa_compact_*` id 泄漏导致的上游 400 属于另一任务。
+- 非末项 `compaction_trigger` 不由插件接管，会按普通请求转发上游，不能用作部署拒绝判据；这是设计行为，不是回归。
 - 线上当前插件仍为 `v0.1.2`，而 README 稳定版为 `v0.1.3`，两者存在版本落差；本 Runbook 的发布目标为 `v0.1.4`。
 - CI 集成 pin 的 CPA v7.2.125 会在 plugin RPC 错误外层把 JSON `code` 重写为 `internal_server_error`：`internal/pluginhost/rpc_client.go:304` 丢弃 `Error.Code`，`sdk/api/handlers/handlers_errors.go` 统一生成错误体。因此该 pin 下 V1 错误体不可能带 `code=compact_bridge_failed`。线上为 v7.2.147，此行为未在本仓库验证；部署时须用 smoke 或日志确认线上 V1 错误体的实际 `code`，不得预先断言。
 
