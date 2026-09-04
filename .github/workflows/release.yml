@@ -15,6 +15,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - name: Checkout
         # actions/checkout v5.1.0
@@ -27,21 +28,32 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
             echo "::error::Tag '$tag' must be a strict x.y.z version (got '$version')"
             exit 1
           fi
+          commit="$(git rev-parse --verify "$GITHUB_SHA^{commit}")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Require a tag commit reachable from main
         run: |
           git fetch origin main
-          tag_commit="$(git rev-list -n1 "$GITHUB_REF")"
+          tag_commit="${{ steps.version.outputs.commit }}"
           if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
             echo "::error::release tag must point to a commit reachable from main"
             exit 1
           fi
+
+      - name: Verify auditable release notes range
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          sh scripts/release-notes.sh --tag "$TAG" --commit "$COMMIT" --output "$notes"
+          sh scripts/release-notes.sh --tag "$TAG" --commit "$COMMIT" --verify --notes "$notes"
 
       - name: Set up Go
         # actions/setup-go v6.5.0
@@ -64,6 +76,8 @@ jobs:
       - name: Checkout
         # actions/checkout v5.1.0
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
 
       - name: Checkout pinned CLIProxyAPI (v7.2.125)
         # actions/checkout v5.1.0
@@ -158,6 +172,8 @@ jobs:
       - name: Checkout
         # actions/checkout v5.1.0
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
 
       - name: Set up Go
         # actions/setup-go v6.5.0
@@ -230,6 +246,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout tagged source for release notes
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Require release tag to still resolve to the validated commit
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          git fetch --no-tags --force origin "refs/tags/$TAG:refs/tags/release-validated-tag"
+          actual="$(git rev-parse --verify refs/tags/release-validated-tag^{commit})"
+          if [ "$actual" != "$COMMIT" ]; then
+            echo "::error::release tag $TAG moved from validated commit $COMMIT to $actual"
+            exit 1
+          fi
+
       - name: Download release archives
         # actions/download-artifact v5.0.0
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
@@ -270,6 +305,14 @@ jobs:
             sha256sum -c checksums.txt
           )
 
+      - name: Generate and verify release notes
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          sh scripts/release-notes.sh --tag "$TAG" --commit "$COMMIT" --output release/release-notes.md
+          sh scripts/release-notes.sh --tag "$TAG" --commit "$COMMIT" --verify --notes release/release-notes.md
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -282,9 +325,12 @@ jobs:
           # visible instead of being misclassified as an existing release.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" \
+              --title "cpa-codex-compact-bridge v$VERSION" \
+              --notes-file release/release-notes.md
           else
             gh release create "$TAG" \
               --title "cpa-codex-compact-bridge v$VERSION" \
-              --generate-notes \
+              --notes-file release/release-notes.md \
               "${assets[@]}"
           fi
