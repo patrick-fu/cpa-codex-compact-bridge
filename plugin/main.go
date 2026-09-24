@@ -59,7 +59,7 @@ const (
 
 // pluginVersion can be overridden in release builds with:
 // -ldflags "-X github.com/patrick-fu/cpa-codex-compact-bridge/plugin.pluginVersion=<version>"
-var pluginVersion = "0.1.4"
+var pluginVersion = "0.2.0"
 
 // configHolder holds the active parsed configuration. It is replaced atomically
 // on plugin.register / plugin.reconfigure.
@@ -490,8 +490,10 @@ func buildSummaryRequestBody(req rpcExecutorRequest, summaryModel string, cleanI
 		"input":               inputEncoded,
 		"tools":               json.RawMessage("[]"),
 		"parallel_tool_calls": jsonRawFalse(),
-		"max_output_tokens":   jsonRawInt(cfg.MaxSummaryTokens),
 		"stream":              jsonRawFalse(),
+	}
+	if cfg.MaxSummaryTokens > 0 {
+		body["max_output_tokens"] = jsonRawInt(cfg.MaxSummaryTokens)
 	}
 	if instructions, ok := parsed["instructions"]; ok {
 		body["instructions"] = instructions

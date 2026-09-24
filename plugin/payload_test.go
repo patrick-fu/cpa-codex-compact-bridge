@@ -650,6 +650,25 @@ func TestBuildSummaryRequestBodyUsesConfiguredCompactPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildSummaryRequestBodyDefersOutputLimitForMaxReasoning(t *testing.T) {
+	req := rpcExecutorRequest{}
+	req.OriginalRequest = []byte(`{"model":"deepseek-flash","reasoning":{"effort":"max","summary":"detailed"},"input":[{"type":"message","role":"user","content":"history"}]}`)
+	body, err := buildSummaryRequestBody(req, "deepseek-flash", []json.RawMessage{mustJSON(t, `{"type":"message","role":"user","content":"history"}`)}, defaultConfig())
+	if err != nil {
+		t.Fatalf("build summary request: %v", err)
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode summary request: %v", err)
+	}
+	if _, ok := parsed["max_output_tokens"]; ok {
+		t.Fatalf("default summary request imposed an output limit: %s", body)
+	}
+	if string(parsed["reasoning"]) != `{"effort":"max","summary":"detailed"}` {
+		t.Fatalf("summary request changed reasoning: %s", body)
+	}
+}
+
 func TestBuildSummaryRequestBodyOmitsInstructionForExplicitBlankPrompt(t *testing.T) {
 	cfg, err := loadConfig([]byte("compact_prompt: ''\nappend_tool_guard: true\n"))
 	if err != nil {

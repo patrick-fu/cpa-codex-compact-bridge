@@ -39,7 +39,6 @@ type Config struct {
 }
 
 const (
-	defaultMaxSummaryTokens = 8000
 	maxAllowedSummaryTokens = 100000
 	defaultMaxSummaryBytes  = 1024 * 1024
 )
@@ -64,11 +63,8 @@ func loadConfig(raw []byte) (Config, error) {
 	if cfg.OnNoMatch == "" {
 		cfg.OnNoMatch = ActionPassthrough
 	}
-	if cfg.MaxSummaryTokens <= 0 {
-		cfg.MaxSummaryTokens = defaultMaxSummaryTokens
-	}
-	if cfg.MaxSummaryTokens > maxAllowedSummaryTokens {
-		return Config{}, fmt.Errorf("max_summary_tokens %d is outside 1..%d", cfg.MaxSummaryTokens, maxAllowedSummaryTokens)
+	if cfg.MaxSummaryTokens < 0 || cfg.MaxSummaryTokens > maxAllowedSummaryTokens {
+		return Config{}, fmt.Errorf("max_summary_tokens %d is outside 0..%d", cfg.MaxSummaryTokens, maxAllowedSummaryTokens)
 	}
 	if cfg.MaxSummaryBytes <= 0 {
 		return Config{}, fmt.Errorf("max_summary_bytes must be greater than zero")
@@ -96,10 +92,9 @@ func loadConfig(raw []byte) (Config, error) {
 
 func defaultConfig() Config {
 	return Config{
-		OnNoMatch:        ActionPassthrough,
-		MaxSummaryTokens: defaultMaxSummaryTokens,
-		MaxSummaryBytes:  defaultMaxSummaryBytes,
-		AppendToolGuard:  true,
+		OnNoMatch:       ActionPassthrough,
+		MaxSummaryBytes: defaultMaxSummaryBytes,
+		AppendToolGuard: true,
 	}
 }
 
