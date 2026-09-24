@@ -2,10 +2,9 @@
 
 ## Supported versions
 
-Security fixes target the current stable **v0.1.3** release. Its macOS/arm64
-and macOS/amd64 archives received local build and ABI smoke coverage, including
-an amd64 load test under Rosetta; release CI automates the same checks for
-future tags. CI runs the real integration suite only on linux/amd64 against
+Security fixes target the current stable **v0.2.0** release. Release CI builds
+and ABI smoke-tests its macOS/arm64 and macOS/amd64 archives. CI runs the real
+integration suite only on linux/amd64 against
 exact CLIProxyAPI **v7.2.125** source (the plugin SDK is **v7.2.120**).
 Windows, other CLIProxyAPI versions, and platforms outside that release matrix
 are not verified and may receive no fixes.

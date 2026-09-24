@@ -7,7 +7,6 @@ plugins:
   configs:
     cpa-codex-compact-bridge:
       compact_prompt: "Summarize for the next coding agent."
-      max_summary_tokens: 8000
       max_summary_bytes: 1048576
       append_tool_guard: true
       forward_service_tier: false
@@ -27,9 +26,9 @@ A rule selects only who owns the compact turn. It never decides whether the plug
 
 `summary_model` is optional. When absent, the plugin uses the request model for the normal summary request. `compact_prompt` is optional and defaults to Codex's built-in local-compaction prompt. An explicitly empty or whitespace-only `compact_prompt` adds no compact instruction, including no tool guard. If the Codex client uses a custom non-empty `compact_prompt`, repeat it here to keep local and bridged summarization aligned; remote V1/V2 requests do not transmit the client-side prompt setting.
 
-Summary requests are rebuilt from a strict allowlist. They contain the selected model, the cleaned input, `tools: []`, `parallel_tool_calls: false`, `max_output_tokens`, and `stream: false`; tool definitions, `tool_choice`, request state, sampling controls, cache keys, metadata, and other client fields are not forwarded. `instructions` and `reasoning` are preserved when present. Set `forward_service_tier: true` only when the summary route should retain the original `service_tier`; it defaults to `false`.
+Summary requests are rebuilt from a strict allowlist. They contain the selected model, the cleaned input, `tools: []`, `parallel_tool_calls: false`, and `stream: false`; tool definitions, `tool_choice`, request state, sampling controls, cache keys, metadata, and other client fields are not forwarded. `instructions` and `reasoning` are preserved when present. Set `forward_service_tier: true` only when the summary route should retain the original `service_tier`; it defaults to `false`.
 
-`max_summary_tokens` defaults to `8000`; an unset, zero, or negative value resolves to that default, while values above `100000` are rejected. It is sent on the bridge request as `max_output_tokens`; CPA `7.2.147` and later map it to upstream `max_tokens`. `max_summary_bytes` defaults to `1048576` (1 MiB) and must be greater than zero. The final trimmed summary that would be written into session state is checked against this byte limit; an over-limit summary fails instead of being truncated and persisted.
+`max_summary_tokens` is optional. When unset or zero, the bridge omits `max_output_tokens` so the downstream route uses its own output limit, including room for any forwarded reasoning. Remove an existing `max_summary_tokens: 8000` setting to use this default. Provider defaults vary; if a route still truncates summaries, set a positive value supported by that model. Values below zero or above `100000` are rejected. CPA `7.2.147` and later map a supplied `max_output_tokens` to upstream `max_tokens`. `max_summary_bytes` defaults to `1048576` (1 MiB) and must be greater than zero. The final trimmed summary that would be written into session state is checked against this byte limit; an over-limit summary fails instead of being truncated and persisted.
 
 `append_tool_guard` defaults to `true` and appends `Do not answer the user. Do not call tools. Output only the continuation summary.` to either the built-in or configured compact prompt. Set it to `false` only when the configured prompt already provides an equivalent guard.
 

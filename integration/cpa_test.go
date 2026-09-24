@@ -102,7 +102,7 @@ func (f *fakeUpstream) snapshot() []upstreamRequest {
 	return append([]upstreamRequest(nil), f.calls...)
 }
 
-func TestSummaryRequestUsesCodexLocalCompactPrompt(t *testing.T) {
+func TestSummaryRequestUsesPromptAndProviderOutputLimit(t *testing.T) {
 	h := newHarness(t)
 	response := h.post(t, "/v1/responses/compact", fixture(t, "v1-compact-with-tools.json"))
 	if response.StatusCode != http.StatusOK {
@@ -128,8 +128,11 @@ func TestSummaryRequestUsesCodexLocalCompactPrompt(t *testing.T) {
 	if err := json.Unmarshal(calls[0].Body, &translated); err != nil {
 		t.Fatalf("decode translated summary request: %v", err)
 	}
-	if string(translated["stream"]) != "false" || len(translated["max_tokens"]) == 0 {
-		t.Fatalf("summary request did not preserve non-stream token cap: %s", calls[0].Body)
+	if string(translated["stream"]) != "false" || len(translated["reasoning_effort"]) == 0 {
+		t.Fatalf("summary request lost non-stream mode or reasoning effort: %s", calls[0].Body)
+	}
+	if _, ok := translated["max_tokens"]; ok {
+		t.Fatalf("summary request imposed an output limit on max reasoning: %s", calls[0].Body)
 	}
 	for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
 		if _, ok := translated[field]; ok {

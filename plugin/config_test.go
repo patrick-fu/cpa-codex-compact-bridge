@@ -12,7 +12,7 @@ func TestLoadConfigDefault(t *testing.T) {
 	if cfg.OnNoMatch != ActionPassthrough {
 		t.Fatalf("OnNoMatch = %q, want passthrough", cfg.OnNoMatch)
 	}
-	if cfg.MaxSummaryTokens != defaultMaxSummaryTokens || cfg.MaxSummaryBytes != defaultMaxSummaryBytes || !cfg.AppendToolGuard || cfg.ForwardServiceTier || len(cfg.SummaryImageModels) != 0 {
+	if cfg.MaxSummaryTokens != 0 || cfg.MaxSummaryBytes != defaultMaxSummaryBytes || !cfg.AppendToolGuard || cfg.ForwardServiceTier || len(cfg.SummaryImageModels) != 0 {
 		t.Fatalf("summary defaults = %+v", cfg)
 	}
 }
@@ -79,8 +79,16 @@ func TestLoadConfigAcceptsMaximumSummaryTokens(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsProviderDefaultSummaryTokens(t *testing.T) {
+	cfg, err := loadConfig([]byte("max_summary_tokens: 0\n"))
+	if err != nil || cfg.MaxSummaryTokens != 0 {
+		t.Fatalf("load provider-default summary tokens = %+v, %v", cfg, err)
+	}
+}
+
 func TestLoadConfigRejectsInvalidSummarySettings(t *testing.T) {
 	cases := []string{
+		"max_summary_tokens: -1\n",
 		"max_summary_tokens: 100001\n",
 		"max_summary_bytes: 0\n",
 		"max_summary_bytes: -1\n",
@@ -91,14 +99,6 @@ func TestLoadConfigRejectsInvalidSummarySettings(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			if _, err := loadConfig([]byte(raw)); err == nil {
 				t.Fatalf("loadConfig(%q) succeeded", raw)
-			}
-		})
-	}
-	for _, raw := range []string{"max_summary_tokens: 0\n", "max_summary_tokens: -1\n"} {
-		t.Run(raw, func(t *testing.T) {
-			cfg, err := loadConfig([]byte(raw))
-			if err != nil || cfg.MaxSummaryTokens != defaultMaxSummaryTokens {
-				t.Fatalf("loadConfig(%q) = %+v, %v", raw, cfg, err)
 			}
 		})
 	}

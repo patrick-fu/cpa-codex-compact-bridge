@@ -1,5 +1,6 @@
 {
   "model": "bridge-test",
+  "reasoning": {"effort": "max", "summary": "detailed"},
   "tools": [{
     "type": "function",
     "name": "lookup_ticket",
